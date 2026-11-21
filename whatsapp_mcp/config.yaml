@@ -1,7 +1,7 @@
 name: WhatsApp MCP
-version: "0.1.0"
+version: "0.2.0"
 slug: whatsapp_mcp
-description: Your personal WhatsApp account, linked as a device like WhatsApp Web, as an MCP server over streamable HTTP with a bearer token.
+description: Your personal WhatsApp account, linked as a device like WhatsApp Web, as an MCP server over streamable HTTP with bearer tokens (read-only by default).
 url: https://github.com/jpch/whatsapp-mcp-ha
 arch:
   - aarch64
@@ -28,7 +28,7 @@ map:
   - type: share
     read_only: false
 options:
-  enable_send: true
+  enable_send: false
   send_rate_per_minute: 6
   send_daily_limit: 50
   allowed_recipients: []
@@ -38,6 +38,7 @@ options:
   log_level: info
 schema:
   auth_token: password?
+  send_token: password?
   enable_send: bool
   send_rate_per_minute: int(1,60)
   send_daily_limit: int(1,10000)

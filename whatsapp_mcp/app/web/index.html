@@ -38,7 +38,7 @@
     <h2>MCP endpoint</h2>
     <dl>
       <dt>Internal URL</dt><dd><code id="url"></code></dd>
-      <dt>Header</dt><dd><code>Authorization: Bearer &lt;token&gt;</code></dd>
+      <dt>Header</dt><dd><code>Authorization: Bearer &lt;token&gt;</code> (auth_token: read tools; send_token: read and send tools)</dd>
       <dt>Send tools</dt><dd id="send"></dd>
       <dt>Media download</dt><dd id="download"></dd>
       <dt>Stored</dt><dd id="counts"></dd>
@@ -51,6 +51,14 @@
       <p id="shownote" class="hidden">The generated token was already shown. Generating a new one stops clients that use the old one.</p>
       <p><button id="showtoken">Show token once</button> <button id="rotate">Generate a new token</button></p>
       <p><code id="token" class="hidden"></code></p>
+    </div>
+    <div id="sendtokenbox" class="hidden">
+      <p>Send tools are on and no <code>send_token</code> is set, so the add-on generated one. Only the send token can
+        list and call the send tools. Give it <b>only</b> to the one client that should send, never to a shared or
+        portal client. It is shown <b>only once</b>.</p>
+      <p id="sendshownote" class="hidden">The generated send token was already shown. Generating a new one stops the client that uses the old one.</p>
+      <p><button id="showsendtoken">Show send token once</button> <button id="rotatesend">Generate a new send token</button></p>
+      <p><code id="sendtoken" class="hidden"></code></p>
     </div>
   </section>
 </main>

@@ -19,10 +19,21 @@ import (
 // MCPPath is the MCP endpoint path.
 const MCPPath = "/mcp"
 
+// Role is what an authenticated token may do.
+type Role int
+
+const (
+	RoleNone Role = iota
+	RoleRead      // auth_token: read tools only
+	RoleSend      // send_token: read and send tools
+)
+
 // Authenticator checks bearer tokens in constant time and slows down repeated failures.
+// It knows the read-only token and, when sending is active, the send token.
 type Authenticator struct {
-	want atomic.Pointer[[32]byte]
-	log  *slog.Logger
+	want     atomic.Pointer[[32]byte]
+	wantSend atomic.Pointer[[32]byte] // nil when sending is not active
+	log      *slog.Logger
 
 	mu         sync.Mutex
 	failures   map[string]*failEntry
@@ -43,23 +54,53 @@ func NewAuthenticator(token string, log *slog.Logger) *Authenticator {
 	return a
 }
 
-// SetToken replaces the accepted token (token rotation from the add-on page).
+// SetToken replaces the accepted read-only token (token rotation from the add-on page).
 func (a *Authenticator) SetToken(token string) {
 	h := sha256.Sum256([]byte(token))
 	a.want.Store(&h)
 }
 
-// Check returns true if the Authorization header carries the token ("Bearer <token>").
-func (a *Authenticator) Check(header string) bool {
+// SetSendToken sets the send token; an empty token disables it.
+func (a *Authenticator) SetSendToken(token string) {
+	if token == "" {
+		a.wantSend.Store(nil)
+		return
+	}
+	h := sha256.Sum256([]byte(token))
+	a.wantSend.Store(&h)
+}
+
+// Role returns what the Authorization header ("Bearer <token>") allows. Both tokens are always
+// compared, in constant time, so the timing does not tell which one matched.
+func (a *Authenticator) Role(header string) Role {
 	scheme, tok, ok := strings.Cut(header, " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") {
 		tok = ""
 	}
-	got := sha256.Sum256([]byte(strings.TrimSpace(tok)))
+	tok = strings.TrimSpace(tok)
+	got := sha256.Sum256([]byte(tok))
 	want := a.want.Load()
-	match := subtle.ConstantTimeCompare(got[:], want[:]) == 1
-	return match && tok != ""
+	read := subtle.ConstantTimeCompare(got[:], want[:]) == 1
+	send := false
+	if ws := a.wantSend.Load(); ws != nil {
+		send = subtle.ConstantTimeCompare(got[:], ws[:]) == 1
+	} else {
+		var zero [32]byte
+		subtle.ConstantTimeCompare(got[:], zero[:])
+	}
+	switch {
+	case tok == "":
+		return RoleNone
+	case send:
+		return RoleSend
+	case read:
+		return RoleRead
+	}
+	return RoleNone
 }
+
+// Check returns true if the Authorization header carries a valid token.
+func (a *Authenticator) Check(header string) bool { return a.Role(header) != RoleNone }
 
 // clientKey identifies the caller for failure limiting. Behind Cloudflare every request comes from
 // the tunnel connector, so the CF-Connecting-IP header is part of the key. It can be forged, which
@@ -109,7 +150,7 @@ func (a *Authenticator) recordFailure(key string) {
 }
 
 // logFailure logs failed attempts with a global rate limit, so a flood cannot fill the log.
-func (a *Authenticator) logFailure(key string) {
+func (a *Authenticator) logFailure() {
 	a.mu.Lock()
 	allow := a.logLimit.AllowN(a.now(), 1)
 	suppressed := a.suppressed
@@ -120,7 +161,8 @@ func (a *Authenticator) logFailure(key string) {
 	}
 	a.mu.Unlock()
 	if allow {
-		a.log.Warn("rejected MCP request without a valid token", "client", key, "suppressed_since_last", suppressed)
+		// No client address: behind a tunnel it is the visitor's IP, which is personal data.
+		a.log.Warn("rejected MCP request without a valid token", "suppressed_since_last", suppressed)
 	}
 }
 
@@ -135,7 +177,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		}
 		if !a.Check(r.Header.Get("Authorization")) {
 			a.recordFailure(key)
-			a.logFailure(key)
+			a.logFailure()
 			w.Header().Set("WWW-Authenticate", `Bearer realm="whatsapp-mcp"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -145,9 +187,16 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 }
 
 // NewMCPHandler builds the exposed handler: GET /healthz (no details) and the authenticated /mcp.
-// Every other path returns 404.
-func NewMCPHandler(server *mcp.Server, auth *Authenticator) http.Handler {
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+// Requests with the send token get sendServer (read and send tools); every other authenticated request
+// gets readServer. sendServer may be nil when sending is not active. Every other path returns 404.
+func NewMCPHandler(readServer, sendServer *mcp.Server, auth *Authenticator) http.Handler {
+	pick := func(r *http.Request) *mcp.Server {
+		if sendServer != nil && auth.Role(r.Header.Get("Authorization")) == RoleSend {
+			return sendServer
+		}
+		return readServer
+	}
+	mcpHandler := mcp.NewStreamableHTTPHandler(pick, &mcp.StreamableHTTPOptions{
 		Stateless:           true,
 		JSONResponse:        true,
 		MaxRequestBodyBytes: 1 << 20,

@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // exitConfigError tells the s6 finish script to stop the add-on instead of restarting it.
@@ -37,22 +39,41 @@ func run() error {
 	if err != nil {
 		return configError{err}
 	}
-	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	// Every line goes through the redacting handler: other people's JIDs and phone numbers are masked.
+	log := slog.New(newRedactingHandler(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})))
 	slog.SetDefault(log)
 
 	// Session keys, messages and the generated token: owner-only files.
 	syscall.Umask(0o077)
-	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(cfg.DataDir, 0o700); err != nil {
+	// Also tightens files left by older versions: data folder 0700, session/message/token files 0600,
+	// downloaded media 0600 in 0700 folders.
+	if n, err := tightenDataDir(cfg.DataDir); err != nil {
 		log.Warn("cannot restrict the data folder permissions", "error", err)
+	} else if n > 0 {
+		log.Info("restricted data folder permissions", "changed", n)
+	}
+	if n, err := tightenTree(cfg.DownloadDir()); err != nil {
+		log.Warn("cannot restrict the downloads folder permissions", "error", err)
+	} else if n > 0 {
+		log.Info("restricted downloads folder permissions", "changed", n)
 	}
 	if err := os.MkdirAll(cfg.OutboxDir(), 0o750); err != nil {
 		log.Warn("cannot create the outbox folder; send_file will not work", "error", err)
 	}
 	if err := cfg.EnsureToken(); err != nil {
-		return err
+		return configError{err}
+	}
+	if err := cfg.EnsureSendToken(); err != nil {
+		return configError{err}
+	}
+	if cfg.SendTokenGenerated {
+		log.Info("no send_token configured: using a generated send token. Open the add-on page to see it (only the client that may send should get it)")
+	}
+	switch {
+	case !cfg.EnableSend && cfg.SendToken != "":
+		log.Info("send_token is set but enable_send is off: send tools are off and send_token is not accepted")
+	case cfg.SendActive() && len(cfg.AllowedRecipients) == 0:
+		log.Warn("send tools are on but allowed_recipients is empty: every send will be refused")
 	}
 	if cfg.TokenGenerated {
 		if cfg.AddonMode {
@@ -76,9 +97,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	tools := &Tools{cfg: cfg, store: store, wa: mgr, sends: NewSendLimiter(cfg.SendPerMinute, cfg.SendPerDay)}
 	auth := NewAuthenticator(cfg.AuthToken, log)
-	servers := []*http.Server{newHTTPServer(cfg.Listen, NewMCPHandler(NewMCPServer(tools), auth))}
+	var sendServer *mcp.Server
+	tools := &Tools{cfg: cfg, store: store, wa: mgr, auth: auth, sends: NewSendLimiter(cfg.SendPerMinute, cfg.SendPerDay)}
+	if cfg.SendActive() {
+		auth.SetSendToken(cfg.SendToken)
+		sendServer = NewMCPServer(tools, true)
+	}
+	servers := []*http.Server{newHTTPServer(cfg.Listen, NewMCPHandler(NewMCPServer(tools, false), sendServer, auth))}
 	if cfg.PageListen != "" {
 		servers = append(servers, newHTTPServer(cfg.PageListen, NewPageHandler(cfg, store, mgr, auth)))
 	}
@@ -91,7 +117,7 @@ func run() error {
 		}(s)
 	}
 	log.Info("WhatsApp MCP started", "version", Version, "mcp", cfg.Listen+MCPPath,
-		"send_tools", cfg.EnableSend, "media_download", cfg.AllowMediaDownload,
+		"send_tools", cfg.SendActive(), "media_download", cfg.AllowMediaDownload,
 		"allowed_recipients", len(cfg.AllowedRecipients), "retention_days", cfg.RetentionDays)
 
 	go store.RunRetention(ctx, cfg.RetentionDays, 6*time.Hour, log)

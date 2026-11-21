@@ -27,13 +27,18 @@ async function refresh() {
     $("newqr").classList.toggle("hidden", !(wa.state === "pairing_timeout" || wa.state === "logged_out"));
     $("unlink").classList.toggle("hidden", !wa.paired);
     $("url").textContent = s.internal_url;
-    $("send").textContent = s.send_enabled ? "enabled" : "disabled";
+    $("send").textContent = s.send_enabled
+      ? (s.allowed_recipients > 0 ? "enabled (send token only), " + s.allowed_recipients + " allowed recipient(s)" : "enabled, but allowed_recipients is empty: every send is refused")
+      : "disabled";
     $("download").textContent = s.media_download ? "enabled" : "disabled";
     $("counts").textContent = s.chats + " chats, " + s.messages + " messages";
     $("version").textContent = s.version;
     $("tokenbox").classList.toggle("hidden", !s.token_generated);
     $("showtoken").classList.toggle("hidden", !!s.token_shown);
     $("shownote").classList.toggle("hidden", !s.token_shown);
+    $("sendtokenbox").classList.toggle("hidden", !s.send_token_generated);
+    $("showsendtoken").classList.toggle("hidden", !!s.send_token_shown);
+    $("sendshownote").classList.toggle("hidden", !s.send_token_shown);
   } catch (e) {
     $("state").textContent = "add-on not reachable";
     $("state").className = "state bad";
@@ -46,16 +51,23 @@ $("logout").addEventListener("click", async () => {
   if (!r.ok) alert("Could not unlink: " + ((await r.json()).error || r.status));
   refresh();
 });
-function showToken(j) {
-  if (j.token) { $("token").textContent = j.token; $("token").classList.remove("hidden"); }
+function showToken(el, j) {
+  if (j.token) { $(el).textContent = j.token; $(el).classList.remove("hidden"); }
   refresh();
 }
 $("showtoken").addEventListener("click", async () => {
-  showToken(await (await post("api/token")).json());
+  showToken("token", await (await post("api/token")).json());
 });
 $("rotate").addEventListener("click", async () => {
   if (!confirm("Generate a new token? MCP clients using the current token will stop working.")) return;
-  showToken(await (await post("api/token/rotate")).json());
+  showToken("token", await (await post("api/token/rotate")).json());
+});
+$("showsendtoken").addEventListener("click", async () => {
+  showToken("sendtoken", await (await post("api/send_token")).json());
+});
+$("rotatesend").addEventListener("click", async () => {
+  if (!confirm("Generate a new send token? The client using the current send token will stop working.")) return;
+  showToken("sendtoken", await (await post("api/send_token/rotate")).json());
 });
 refresh();
 setInterval(refresh, 3000);

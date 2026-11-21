@@ -40,10 +40,7 @@ func NewPageHandler(cfg *Config, store *Store, wa PageController, auth *Authenti
 	hostname, _ := os.Hostname()
 	var tokMu sync.Mutex
 	shownPath := filepath.Join(cfg.DataDir, tokenShownFile)
-	tokenShown := func() bool {
-		_, err := os.Stat(shownPath)
-		return err == nil
-	}
+	sendShownPath := filepath.Join(cfg.DataDir, sendTokenShownFile)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -58,16 +55,19 @@ func NewPageHandler(cfg *Config, store *Store, wa PageController, auth *Authenti
 		chats, msgs := store.Counts(r.Context())
 		_, port, _ := net.SplitHostPort(cfg.Listen)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"whatsapp":        wa.Status(),
-			"has_qr":          wa.QRCode() != "",
-			"chats":           chats,
-			"messages":        msgs,
-			"token_generated": cfg.TokenGenerated,
-			"token_shown":     cfg.TokenGenerated && tokenShown(),
-			"send_enabled":    cfg.EnableSend,
-			"media_download":  cfg.AllowMediaDownload,
-			"internal_url":    "http://" + hostname + ":" + port + MCPPath,
-			"version":         Version,
+			"whatsapp":             wa.Status(),
+			"has_qr":               wa.QRCode() != "",
+			"chats":                chats,
+			"messages":             msgs,
+			"token_generated":      cfg.TokenGenerated,
+			"token_shown":          cfg.TokenGenerated && fileExists(shownPath),
+			"send_enabled":         cfg.SendActive(),
+			"send_token_generated": cfg.SendTokenGenerated && cfg.SendActive(),
+			"send_token_shown":     cfg.SendTokenGenerated && cfg.SendActive() && fileExists(sendShownPath),
+			"allowed_recipients":   len(cfg.AllowedRecipients),
+			"media_download":       cfg.AllowMediaDownload,
+			"internal_url":         "http://" + hostname + ":" + port + MCPPath,
+			"version":              Version,
 		})
 	})
 	mux.HandleFunc("GET /api/qr.png", func(w http.ResponseWriter, r *http.Request) {
@@ -84,46 +84,78 @@ func NewPageHandler(cfg *Config, store *Store, wa PageController, auth *Authenti
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(png)
 	})
-	mux.HandleFunc("POST /api/token", func(w http.ResponseWriter, r *http.Request) {
-		tokMu.Lock()
-		defer tokMu.Unlock()
-		if !cfg.TokenGenerated {
-			writeJSON(w, http.StatusOK, map[string]any{"token": nil, "reason": "configured"})
-			return
-		}
-		if tokenShown() {
-			writeJSON(w, http.StatusOK, map[string]any{"token": nil, "reason": "already_shown"})
-			return
-		}
-		if err := os.WriteFile(shownPath, nil, 0o600); err != nil {
-			http.Error(w, "cannot record that the token was shown", http.StatusInternalServerError)
-			return
-		}
-		// Audit trail (never the token): lets the owner spot a reveal they did not make.
-		slog.Warn("generated token revealed on the add-on page")
-		writeJSON(w, http.StatusOK, map[string]any{"token": cfg.AuthToken})
-	})
-	mux.HandleFunc("POST /api/token/rotate", func(w http.ResponseWriter, r *http.Request) {
-		tokMu.Lock()
-		defer tokMu.Unlock()
-		if !cfg.TokenGenerated {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "auth_token is set in the configuration; change it there"})
-			return
-		}
-		tok, err := GenerateToken(cfg.DataDir)
-		if err != nil {
-			http.Error(w, "cannot generate a token", http.StatusInternalServerError)
-			return
-		}
-		cfg.AuthToken = tok
-		auth.SetToken(tok)
-		if err := os.WriteFile(shownPath, nil, 0o600); err != nil {
-			http.Error(w, "cannot record that the token was shown", http.StatusInternalServerError)
-			return
-		}
-		slog.Warn("generated token rotated on the add-on page; MCP clients need the new token")
-		writeJSON(w, http.StatusOK, map[string]any{"token": tok})
-	})
+	// The read-only token (auth_token) and the send token (send_token) are handled the same way.
+	type tokenSlot struct {
+		route, option, shownFile, label string
+		generated                       func() bool
+		get                             func() string
+		rotate                          func() (string, error)
+	}
+	slots := []tokenSlot{
+		{route: "/api/token", option: "auth_token", shownFile: tokenShownFile, label: "generated token",
+			generated: func() bool { return cfg.TokenGenerated },
+			get:       func() string { return cfg.AuthToken },
+			rotate: func() (string, error) {
+				tok, err := GenerateToken(cfg.DataDir)
+				if err == nil {
+					cfg.AuthToken = tok
+					auth.SetToken(tok)
+				}
+				return tok, err
+			}},
+		{route: "/api/send_token", option: "send_token", shownFile: sendTokenShownFile, label: "generated send token",
+			generated: func() bool { return cfg.SendTokenGenerated && cfg.SendActive() },
+			get:       func() string { return cfg.SendToken },
+			rotate: func() (string, error) {
+				tok, err := GenerateSendToken(cfg.DataDir)
+				if err == nil {
+					cfg.SendToken = tok
+					auth.SetSendToken(tok)
+				}
+				return tok, err
+			}},
+	}
+	for _, sl := range slots {
+		shown := filepath.Join(cfg.DataDir, sl.shownFile)
+		mux.HandleFunc("POST "+sl.route, func(w http.ResponseWriter, r *http.Request) {
+			tokMu.Lock()
+			defer tokMu.Unlock()
+			if !sl.generated() {
+				writeJSON(w, http.StatusOK, map[string]any{"token": nil, "reason": "configured"})
+				return
+			}
+			if fileExists(shown) {
+				writeJSON(w, http.StatusOK, map[string]any{"token": nil, "reason": "already_shown"})
+				return
+			}
+			if err := os.WriteFile(shown, nil, 0o600); err != nil {
+				http.Error(w, "cannot record that the token was shown", http.StatusInternalServerError)
+				return
+			}
+			// Audit trail (never the token): lets the owner spot a reveal they did not make.
+			slog.Warn(sl.label + " revealed on the add-on page")
+			writeJSON(w, http.StatusOK, map[string]any{"token": sl.get()})
+		})
+		mux.HandleFunc("POST "+sl.route+"/rotate", func(w http.ResponseWriter, r *http.Request) {
+			tokMu.Lock()
+			defer tokMu.Unlock()
+			if !sl.generated() {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": sl.option + " is set in the configuration; change it there"})
+				return
+			}
+			tok, err := sl.rotate()
+			if err != nil {
+				http.Error(w, "cannot generate a token", http.StatusInternalServerError)
+				return
+			}
+			if err := os.WriteFile(shown, nil, 0o600); err != nil {
+				http.Error(w, "cannot record that the token was shown", http.StatusInternalServerError)
+				return
+			}
+			slog.Warn(sl.label + " rotated on the add-on page; MCP clients need the new token")
+			writeJSON(w, http.StatusOK, map[string]any{"token": tok})
+		})
+	}
 	mux.HandleFunc("POST /api/pair", func(w http.ResponseWriter, r *http.Request) {
 		wa.RequestPairing()
 		writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
@@ -138,6 +170,11 @@ func NewPageHandler(cfg *Config, store *Store, wa PageController, auth *Authenti
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
 	return securityHeaders(ingressOnly(cfg.PageAllowedIPs, mux))
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 func ingressOnly(allowed []net.IP, next http.Handler) http.Handler {

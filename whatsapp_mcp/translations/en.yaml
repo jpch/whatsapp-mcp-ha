@@ -1,10 +1,13 @@
 configuration:
   auth_token:
-    name: Bearer token
-    description: "Token MCP clients send as 'Authorization: Bearer <token>'. At least 32 printable characters without spaces. Leave empty to use a generated token, shown once on the add-on page."
+    name: Read-only token
+    description: "Bearer token for the read tools only ('Authorization: Bearer <token>'). At least 32 printable characters without spaces. Leave empty to use a generated token, shown once on the add-on page. Changing it means updating every client that stores it."
+  send_token:
+    name: Send token
+    description: "The only token that can list and call the send tools, and only when 'Enable send tools' is on. Must differ from the read-only token. Leave empty to use a generated one, shown once on the add-on page. Give it only to the one client that should send, never to a shared or portal client."
   enable_send:
     name: Enable send tools
-    description: "On (default): send_message, send_file and send_audio_message are available. Off: the server is read-only and those tools are not listed."
+    description: "Off (default): the server is read-only for every token. On: clients using the send token also get send_message, send_file and send_audio_message."
   send_rate_per_minute:
     name: Sends per minute
     description: Maximum messages sent per minute, across all clients.
@@ -13,7 +16,7 @@ configuration:
     description: Maximum messages sent in any 24-hour window, across all clients.
   allowed_recipients:
     name: Allowed recipients
-    description: "Phone numbers with country code (digits) or JIDs (…@s.whatsapp.net, …@lid, groups …@g.us) the send tools may write to. Empty = anyone. Recommended: list the chats agents should use, because incoming messages can try to trick an agent into sending."
+    description: "Phone numbers with country code (digits) or JIDs (…@s.whatsapp.net, …@lid, groups …@g.us) the send tools may write to. Empty = every send is refused. Incoming messages can try to trick an agent into sending, so list only the chats agents should use."
   allow_media_download:
     name: Allow media download
     description: "Off (default): download_media is not available. On: it saves received media into /share/whatsapp-mcp/downloads."
@@ -25,6 +28,6 @@ configuration:
     description: Delete stored messages older than this many days (checked every 6 hours). 0 keeps everything.
   log_level:
     name: Log level
-    description: Message contents and tokens are never logged at any level.
+    description: Message contents and tokens are never logged; other people's phone numbers and JIDs are masked.
 network:
   8120/tcp: MCP endpoint (/mcp, bearer token required). Leave empty unless LAN clients need it.

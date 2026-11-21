@@ -50,8 +50,10 @@ func testConfig(t *testing.T) *Config {
 	t.Helper()
 	dir := t.TempDir()
 	return &Config{
-		AuthToken: "test-token-0123456789abcdefghijklmnop", EnableSend: true, SendPerMinute: 6, SendPerDay: 100,
-		MaxMediaMB: 1, DataDir: filepath.Join(dir, "data"), MediaDir: filepath.Join(dir, "media"), Listen: ":8120",
+		AuthToken: "test-token-0123456789abcdefghijklmnop", SendToken: "send-token-ZYXWVUTSRQPONMLKJIHGFEDCBA98",
+		EnableSend: true, SendPerMinute: 6, SendPerDay: 100,
+		AllowedRecipients: map[string]bool{"351900000000@s.whatsapp.net": true, "123-456@g.us": true},
+		MaxMediaMB:        1, DataDir: filepath.Join(dir, "data"), MediaDir: filepath.Join(dir, "media"), Listen: ":8120",
 	}
 }
 

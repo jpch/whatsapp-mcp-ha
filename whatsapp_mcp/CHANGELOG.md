@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.2.0
+
+Security hardening. **Read before updating** if you used the send tools in 0.1.0.
+
+- **Two tokens.** `auth_token` is now the read-only token: clients using it see only the read tools, exactly as
+  before for reading. The new `send_token` (password field; generated and shown once on the add-on page when
+  empty) is the only token that can list and call `send_message`, `send_file` and `send_audio_message`. It must
+  differ from `auth_token` and follows the same strength rules. Calling a send tool with the read-only token is a
+  tool error, not an authentication failure, so it never counts against the failed-login limit.
+- **Send tools off by default.** The `enable_send` default changed from `true` to `false`. When it is off, no token
+  sees the send tools and the send token is not accepted. An existing installation keeps its saved
+  `enable_send: true`, but sending still needs the send token.
+- **`allowed_recipients` empty now refuses every send** (in 0.1.0, empty meant anyone). List the numbers or JIDs
+  agents may write to. The existing `send_rate_per_minute` and `send_daily_limit` still apply.
+- **Received file names.** `download_media` already kept only a sanitised base name inside the downloads folder
+  (through `os.Root`); it now also breaks up `..` sequences, never overwrites an existing file (exclusive create,
+  `-2`, `-3`, ... suffix) and writes media `0600` in `0700` folders (was `0640`/`0750`).
+- **Permissions.** On every start the data folder is set to `0700` and the session, message and token files to
+  `0600`, and downloaded media to `0600` in `0700` folders, including files left by older versions. Symlinks are
+  skipped.
+- **Logs.** Other people's phone numbers and JIDs are masked in every log line, including whatsmeow warnings and
+  errors. Failed-login lines no longer include the client address.
+- Add-on page: shows the generated send token once (with rotation) and warns when sending is on but
+  `allowed_recipients` is empty.
+- Dependabot for Go modules and GitHub Actions.
+
 ## 0.1.0
 
 - First release: personal WhatsApp account linked as a device (whatsmeow), MCP over streamable HTTP on port 8120

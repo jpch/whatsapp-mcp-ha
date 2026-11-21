@@ -97,3 +97,49 @@ func TestPageIngressOnly(t *testing.T) {
 		t.Fatalf("rotate with configured token: %d", w.Code)
 	}
 }
+
+func TestPageSendToken(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.PageAllowedIPs = []net.IP{net.ParseIP("172.30.32.2")}
+	cfg.SendToken = ""
+	os.MkdirAll(cfg.DataDir, 0o700)
+	if err := cfg.EnsureSendToken(); err != nil || !cfg.SendTokenGenerated {
+		t.Fatal(err)
+	}
+	auth := NewAuthenticator(cfg.AuthToken, quietLog())
+	auth.SetSendToken(cfg.SendToken)
+	h := NewPageHandler(cfg, testStore(t), &fakeWA{}, auth)
+	ingress := "172.30.32.2:5555"
+	csrf := map[string]string{"X-Requested-With": "whatsapp-mcp"}
+	if w := pageReq(h, "GET", "/api/status", ingress, nil); strings.Contains(w.Body.String(), cfg.SendToken) ||
+		!strings.Contains(w.Body.String(), `"send_token_generated":true`) {
+		t.Fatalf("status: %s", w.Body.String())
+	}
+	if w := pageReq(h, "POST", "/api/send_token", ingress, nil); w.Code != 403 {
+		t.Fatalf("send token without header: %d", w.Code)
+	}
+	if w := pageReq(h, "POST", "/api/send_token", ingress, csrf); !strings.Contains(w.Body.String(), cfg.SendToken) {
+		t.Fatalf("send token: %s", w.Body.String())
+	}
+	if w := pageReq(h, "POST", "/api/send_token", ingress, csrf); strings.Contains(w.Body.String(), cfg.SendToken) {
+		t.Fatal("send token shown twice")
+	}
+	old := cfg.SendToken
+	w := pageReq(h, "POST", "/api/send_token/rotate", ingress, csrf)
+	var rot struct{ Token string }
+	json.Unmarshal(w.Body.Bytes(), &rot)
+	if w.Code != 200 || rot.Token == "" || rot.Token == old || auth.Role("Bearer "+rot.Token) != RoleSend || auth.Check("Bearer "+old) {
+		t.Fatalf("rotate send token: %d %s", w.Code, w.Body.String())
+	}
+	if auth.Role("Bearer "+cfg.AuthToken) != RoleRead {
+		t.Fatal("read token changed by send token rotation")
+	}
+	// A configured send_token is never revealed or rotated from the page.
+	cfg.SendTokenGenerated = false
+	if w := pageReq(h, "POST", "/api/send_token", ingress, csrf); strings.Contains(w.Body.String(), cfg.SendToken) {
+		t.Fatal("configured send token revealed")
+	}
+	if w := pageReq(h, "POST", "/api/send_token/rotate", ingress, csrf); w.Code != 409 {
+		t.Fatalf("rotate configured send token: %d", w.Code)
+	}
+}

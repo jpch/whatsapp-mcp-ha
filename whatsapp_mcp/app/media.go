@@ -227,7 +227,11 @@ func placeholderWaveform(secs uint32) []byte {
 	return w
 }
 
-// safeFileName keeps a received file name usable as a single path element.
+// safeFileName turns a name chosen by someone else (a received document's file name, a message ID) into a
+// single, harmless path element: only the base name is kept (after treating '\\' as a separator), every
+// character outside [A-Za-z0-9._-] becomes '_' (this covers control characters, spaces, separators and
+// Unicode look-alikes such as fullwidth slashes or right-to-left overrides), ".." sequences are broken up
+// and leading dots are removed, so the result is never ".", ".." or a hidden file. It may be empty.
 func safeFileName(s string) string {
 	s = filepath.Base(strings.ReplaceAll(s, "\\", "/"))
 	var b strings.Builder
@@ -240,8 +244,45 @@ func safeFileName(s string) string {
 		}
 	}
 	out := strings.TrimLeft(b.String(), ".")
+	for strings.Contains(out, "..") {
+		out = strings.ReplaceAll(out, "..", "_.")
+	}
 	if len(out) > 100 {
-		out = out[len(out)-100:]
+		out = strings.TrimLeft(out[len(out)-100:], ".")
 	}
 	return out
+}
+
+// validElement reports whether name is usable as one file name inside a folder.
+func validElement(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.HasPrefix(name, ".") &&
+		!strings.ContainsAny(name, "/\\\x00") && fs.ValidPath(name)
+}
+
+// createExclusive creates dir/name inside root without ever replacing an existing file (O_EXCL; os.Root
+// refuses symlinks that lead outside root). If the name is taken, "-2", "-3", ... is added before the
+// extension. It returns the open file (mode 0600) and the name used.
+func createExclusive(root *os.Root, dir, name string) (*os.File, string, error) {
+	if !validElement(dir) || !validElement(name) {
+		return nil, "", errors.New("invalid file name")
+	}
+	ext := path.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	if stem == "" {
+		stem, ext = name, ""
+	}
+	for i := 1; i <= 100; i++ {
+		cand := name
+		if i > 1 {
+			cand = fmt.Sprintf("%s-%d%s", stem, i, ext)
+		}
+		f, err := root.OpenFile(dir+"/"+cand, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			return f, cand, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, "", err
+		}
+	}
+	return nil, "", errors.New("too many files with the same name in the downloads folder")
 }

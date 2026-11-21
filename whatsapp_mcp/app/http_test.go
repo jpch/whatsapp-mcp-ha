@@ -45,8 +45,14 @@ func newEnv(t *testing.T, mutate func(*Config)) *env {
 	wa := &fakeWA{status: Status{State: StateConnected, Paired: true, Connected: true}, contacts: map[string]string{"333333333@s.whatsapp.net": "Bob Builder"}}
 	store := testStore(t)
 	seed(t, store)
-	tools := &Tools{cfg: cfg, store: store, wa: wa, sends: NewSendLimiter(cfg.SendPerMinute, cfg.SendPerDay)}
-	srv := httptest.NewServer(NewMCPHandler(NewMCPServer(tools), NewAuthenticator(cfg.AuthToken, quietLog())))
+	auth := NewAuthenticator(cfg.AuthToken, quietLog())
+	tools := &Tools{cfg: cfg, store: store, wa: wa, auth: auth, sends: NewSendLimiter(cfg.SendPerMinute, cfg.SendPerDay)}
+	var sendServer *mcp.Server
+	if cfg.SendActive() {
+		auth.SetSendToken(cfg.SendToken)
+		sendServer = NewMCPServer(tools, true)
+	}
+	srv := httptest.NewServer(NewMCPHandler(NewMCPServer(tools, false), sendServer, auth))
 	t.Cleanup(srv.Close)
 	return &env{cfg: cfg, wa: wa, store: store, srv: srv}
 }
@@ -183,27 +189,111 @@ func toolNames(t *testing.T, cs *mcp.ClientSession) []string {
 }
 
 func TestToolRegistration(t *testing.T) {
+	readTools := "get_chat,get_contact_chats,get_direct_chat_by_contact,get_last_interaction,get_message_context,get_status,list_chats,list_messages,search_contacts"
+	e := newEnv(t, nil)
+	// The read-only token (the existing auth_token) never sees the send tools.
+	cs, err := e.session(t, e.cfg.AuthToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	if got := strings.Join(toolNames(t, cs), ","); got != readTools {
+		t.Fatalf("read token tools:\n got %s\nwant %s", got, readTools)
+	}
+	// The send token gets the read tools plus the send tools.
+	cs2, err := e.session(t, e.cfg.SendToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs2.Close()
+	want := readTools + ",send_audio_message,send_file,send_message"
+	if got := strings.Join(toolNames(t, cs2), ","); got != want {
+		t.Fatalf("send token tools:\n got %s\nwant %s", got, want)
+	}
+
+	// enable_send off: no token sees send tools, and the send token is not accepted at all.
+	ro := newEnv(t, func(c *Config) { c.EnableSend = false; c.AllowMediaDownload = true })
+	cs3, err := ro.session(t, ro.cfg.AuthToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs3.Close()
+	names := strings.Join(toolNames(t, cs3), ",")
+	if strings.Contains(names, "send_") || !strings.Contains(names, "download_media") {
+		t.Fatalf("read-only tools: %s", names)
+	}
+	if _, err := ro.session(t, ro.cfg.SendToken); err == nil {
+		t.Fatal("send token accepted while enable_send is off")
+	}
+}
+
+func TestSendToolWithReadTokenIsToolError(t *testing.T) {
 	e := newEnv(t, nil)
 	cs, err := e.session(t, e.cfg.AuthToken)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cs.Close()
-	got := strings.Join(toolNames(t, cs), ",")
-	want := "get_chat,get_contact_chats,get_direct_chat_by_contact,get_last_interaction,get_message_context,get_status,list_chats,list_messages,search_contacts,send_audio_message,send_file,send_message"
-	if got != want {
-		t.Fatalf("tools:\n got %s\nwant %s", got, want)
+	// More attempts than the failed-auth limit (10): none of them may count as an authentication failure.
+	for i := 0; i < 15; i++ {
+		for _, name := range []string{"send_message", "send_file", "send_audio_message"} {
+			res, _ := call(t, cs, name, map[string]any{"recipient": "351900000000", "message": "x", "media_path": "a.png"})
+			if !res.IsError || !strings.Contains(errText(res), "send_token") {
+				t.Fatalf("%s with the read token: %s", name, errText(res))
+			}
+		}
 	}
+	if len(e.wa.sent) != 0 || len(e.wa.files) != 0 {
+		t.Fatal("sent with the read token")
+	}
+	if _, out := call(t, cs, "get_status", nil); out["send_allowed_for_this_token"] != false || out["send_enabled"] != true {
+		t.Fatalf("status: %v", out)
+	}
+	// The same client can still use read tools: it was never rate limited.
+	if res, _ := call(t, cs, "list_chats", nil); res.IsError {
+		t.Fatalf("read token locked out: %s", errText(res))
+	}
+}
 
-	ro := newEnv(t, func(c *Config) { c.EnableSend = false; c.AllowMediaDownload = true })
-	cs2, err := ro.session(t, ro.cfg.AuthToken)
+func TestEmptyAllowedRecipientsRefusesSends(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.AllowedRecipients = nil })
+	os.WriteFile(filepath.Join(e.cfg.OutboxDir(), "pic.png"), pngBytes(), 0o644)
+	cs, err := e.session(t, e.cfg.SendToken)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs2.Close()
-	names := strings.Join(toolNames(t, cs2), ",")
-	if strings.Contains(names, "send_") || !strings.Contains(names, "download_media") {
-		t.Fatalf("read-only tools: %s", names)
+	defer cs.Close()
+	for name, args := range map[string]map[string]any{
+		"send_message": {"recipient": "351900000000", "message": "hi"},
+		"send_file":    {"recipient": "351900000000", "media_path": "pic.png"},
+	} {
+		res, _ := call(t, cs, name, args)
+		if !res.IsError || !strings.Contains(errText(res), "allowed_recipients is empty") {
+			t.Fatalf("%s with an empty allowlist: %s", name, errText(res))
+		}
+	}
+	if len(e.wa.sent) != 0 || len(e.wa.files) != 0 {
+		t.Fatal("sent with an empty allowlist")
+	}
+}
+
+func TestAuthenticatorRoles(t *testing.T) {
+	a := NewAuthenticator("read-token-0123456789abcdefghijklmn", quietLog())
+	if a.Role("Bearer send-token-0123456789abcdefghijklmn") != RoleNone {
+		t.Fatal("send token accepted before it was set")
+	}
+	a.SetSendToken("send-token-0123456789abcdefghijklmn")
+	for h, want := range map[string]Role{
+		"Bearer read-token-0123456789abcdefghijklmn": RoleRead, "Bearer send-token-0123456789abcdefghijklmn": RoleSend,
+		"Bearer ": RoleNone, "": RoleNone, "Basic send-token-0123456789abcdefghijklmn": RoleNone, "Bearer x": RoleNone,
+	} {
+		if got := a.Role(h); got != want {
+			t.Errorf("%q: %v, want %v", h, got, want)
+		}
+	}
+	a.SetSendToken("")
+	if a.Role("Bearer send-token-0123456789abcdefghijklmn") != RoleNone {
+		t.Fatal("send token still accepted after it was cleared")
 	}
 }
 
@@ -269,7 +359,7 @@ func TestSendTools(t *testing.T) {
 	e := newEnv(t, func(c *Config) { c.SendPerMinute = 3 })
 	os.WriteFile(filepath.Join(e.cfg.OutboxDir(), "pic.png"), pngBytes(), 0o644)
 	os.WriteFile(filepath.Join(e.cfg.MediaDir, "secret.txt"), []byte("nope"), 0o644)
-	cs, err := e.session(t, e.cfg.AuthToken)
+	cs, err := e.session(t, e.cfg.SendToken)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +476,7 @@ func TestParseRecipient(t *testing.T) {
 func TestAllowedRecipientsEnforced(t *testing.T) {
 	e := newEnv(t, func(c *Config) { c.AllowedRecipients = map[string]bool{"351900000000@s.whatsapp.net": true} })
 	os.WriteFile(filepath.Join(e.cfg.OutboxDir(), "pic.png"), pngBytes(), 0o644)
-	cs, err := e.session(t, e.cfg.AuthToken)
+	cs, err := e.session(t, e.cfg.SendToken)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,9 +538,12 @@ func TestAuthEvictsOldestAndLimitsLogs(t *testing.T) {
 		t.Fatal("eviction cleared the attacker's limit")
 	}
 	for i := 0; i < 1000; i++ {
-		a.logFailure("x")
+		a.logFailure()
 	}
 	if n := strings.Count(buf.String(), "rejected MCP request"); n > 5 {
 		t.Fatalf("%d failed-auth log lines, want at most 5", n)
+	}
+	if strings.Contains(buf.String(), "client=") {
+		t.Fatalf("failed-auth log names the client: %s", buf.String())
 	}
 }

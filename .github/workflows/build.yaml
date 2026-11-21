@@ -96,9 +96,11 @@ jobs:
         run: |
           set -eu
           token=$(head -c 32 /dev/urandom | base64 | tr -d '/+=\n')
+          send_token=$(head -c 32 /dev/urandom | base64 | tr -d '/+=\n')
           # shellcheck disable=SC2086
           docker run -d --name smoke $AA_OPT -p 127.0.0.1:8120:8120 \
-            -e WA_MCP_NO_CONNECT=1 -e WA_MCP_TOKEN="$token" whatsapp-mcp:test
+            -e WA_MCP_NO_CONNECT=1 -e WA_MCP_TOKEN="$token" \
+            -e WA_MCP_ENABLE_SEND=true -e WA_MCP_SEND_TOKEN="$send_token" whatsapp-mcp:test
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8120/healthz && break; sleep 1; done
           docker exec smoke uname -m
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8120/mcp)" = 401
@@ -111,14 +113,21 @@ jobs:
           curl -fsS -X POST http://127.0.0.1:8120/mcp -H "Authorization: Bearer $token" \
             -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
             -H 'MCP-Protocol-Version: 2025-06-18' -d "$list" > tools.json
-          grep -q '"send_message"' tools.json
+          # The read-only token never sees the send tools; the send token does.
+          ! grep -q '"send_message"' tools.json
           grep -q '"list_chats"' tools.json
           grep -q '"untrusted"' tools.json
+          curl -fsS -X POST http://127.0.0.1:8120/mcp -H "Authorization: Bearer $send_token" \
+            -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+            -H 'MCP-Protocol-Version: 2025-06-18' -d "$list" > send-tools.json
+          grep -q '"send_message"' send-tools.json
+          grep -q '"list_chats"' send-tools.json
           # Token, data files and the database must not be readable by others; the token never appears in the log.
           test "$(docker exec smoke stat -c %a /data)" = 700
           test "$(docker exec smoke stat -c %a /data/messages.db)" = 600
           test "$(docker exec smoke stat -c %a /data/whatsmeow.db)" = 600
           ! docker logs smoke 2>&1 | grep -qF "$token"
+          ! docker logs smoke 2>&1 | grep -qF "$send_token"
           if [ "$AA_ENABLED" = "true" ]; then
             # The server runs in the confined child profile and cannot write outside /data and /share/whatsapp-mcp.
             label=$(docker exec smoke sh -c 'cat /proc/$(pidof whatsapp-mcp)/attr/current')
