@@ -42,12 +42,9 @@ func ReadOutboxFile(outbox, mediaPath string, maxBytes int64) (*OutboxFile, erro
 	if err != nil {
 		return nil, err
 	}
-	if err := RequireRealDir(outbox); err != nil {
-		return nil, err
-	}
-	root, err := os.OpenRoot(outbox)
+	root, err := OpenRealRoot(outbox)
 	if err != nil {
-		return nil, fmt.Errorf("outbox folder is not available: %w", err)
+		return nil, err
 	}
 	defer root.Close()
 	f, err := root.Open(rel)
@@ -82,22 +79,35 @@ func ReadOutboxFile(outbox, mediaPath string, maxBytes int64) (*OutboxFile, erro
 	return &OutboxFile{Name: path.Base(rel), Data: data, Mime: mime, Kind: kind}, nil
 }
 
-// RequireRealDir refuses a media folder that is (or sits under) a symlink: os.Root confines paths
-// below its root, but follows a symlinked root itself, which another add-on with /share access could plant.
-func RequireRealDir(dir string) error {
+// OpenRealRoot opens dir as an os.Root and refuses it when the path is (or passes through) a symlink.
+// os.Root confines everything below its root but follows a symlinked root itself, which another add-on
+// with /share access could plant. The check runs after opening: the opened directory must be the same
+// file (device and inode) as the symlink-free path, so a swap between check and open is detected.
+func OpenRealRoot(dir string) (*os.Root, error) {
 	clean := filepath.Clean(dir)
-	real, err := filepath.EvalSymlinks(clean)
+	root, err := os.OpenRoot(clean)
 	if err != nil {
-		return fmt.Errorf("media folder is not available: %w", err)
+		return nil, fmt.Errorf("media folder is not available: %w", err)
 	}
-	if real != clean {
-		return fmt.Errorf("media folder %s must not be a symlink", clean)
+	fail := func(msg string) (*os.Root, error) {
+		root.Close()
+		return nil, fmt.Errorf("media folder %s %s", clean, msg)
 	}
-	st, err := os.Lstat(clean)
-	if err != nil || !st.IsDir() {
-		return fmt.Errorf("media folder %s is not a directory", clean)
+	rootInfo, err := root.Stat(".")
+	if err != nil {
+		return fail("cannot be read")
 	}
-	return nil
+	pathInfo, err := os.Lstat(clean)
+	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.IsDir() {
+		return fail("must be a real directory, not a symlink")
+	}
+	if real, err := filepath.EvalSymlinks(clean); err != nil || real != clean {
+		return fail("must not be reached through a symlink")
+	}
+	if !os.SameFile(rootInfo, pathInfo) {
+		return fail("changed while it was being opened")
+	}
+	return root, nil
 }
 
 func outboxRelative(outbox, mediaPath string) (string, error) {

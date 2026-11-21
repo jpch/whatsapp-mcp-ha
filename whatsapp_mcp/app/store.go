@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -17,17 +18,23 @@ type Store struct {
 	db *sql.DB
 }
 
+// MessageText holds the parts of a message written by other people. Tool results put them under
+// "untrusted" so agents can tell data from instructions.
+type MessageText struct {
+	Content  string `json:"content"`
+	ChatName string `json:"chat_name,omitempty"`
+	Filename string `json:"filename,omitempty"`
+}
+
 // MessageRow is a stored message, including the media keys needed to download it later.
 type MessageRow struct {
-	ID        string    `json:"id"`
-	ChatJID   string    `json:"chat_jid"`
-	ChatName  string    `json:"chat_name,omitempty"`
-	Sender    string    `json:"sender"`
-	Content   string    `json:"content"`
-	Timestamp time.Time `json:"timestamp"`
-	IsFromMe  bool      `json:"is_from_me"`
-	MediaType string    `json:"media_type,omitempty"`
-	Filename  string    `json:"filename,omitempty"`
+	ID        string      `json:"id"`
+	ChatJID   string      `json:"chat_jid"`
+	Sender    string      `json:"sender"`
+	Timestamp time.Time   `json:"timestamp"`
+	IsFromMe  bool        `json:"is_from_me"`
+	MediaType string      `json:"media_type,omitempty"`
+	Untrusted MessageText `json:"untrusted"`
 
 	URL           string `json:"-"`
 	DirectPath    string `json:"-"`
@@ -38,15 +45,20 @@ type MessageRow struct {
 	Mimetype      string `json:"-"`
 }
 
+// ChatText holds chat fields written by other people (names, last message text).
+type ChatText struct {
+	Name        string `json:"name,omitempty"`
+	LastMessage string `json:"last_message,omitempty"`
+}
+
 // ChatRow is a chat with optional last message.
 type ChatRow struct {
 	JID             string     `json:"jid"`
-	Name            string     `json:"name,omitempty"`
 	IsGroup         bool       `json:"is_group"`
 	LastMessageTime *time.Time `json:"last_message_time,omitempty"`
-	LastMessage     string     `json:"last_message,omitempty"`
 	LastSender      string     `json:"last_sender,omitempty"`
 	LastIsFromMe    *bool      `json:"last_is_from_me,omitempty"`
+	Untrusted       ChatText   `json:"untrusted"`
 }
 
 const schema = `
@@ -81,7 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender);
 
 // OpenStore opens (and creates) the message database at path.
 func OpenStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite3", "file:"+path+"?_foreign_keys=on&_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000")
+	db, err := sql.Open("sqlite3", "file:"+path+"?_foreign_keys=on&_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000&_auto_vacuum=incremental")
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +129,7 @@ func (s *Store) ChatName(ctx context.Context, jid string) string {
 
 // StoreMessage inserts or replaces a message. Messages with neither text nor media are skipped.
 func (s *Store) StoreMessage(ctx context.Context, m *MessageRow) error {
-	if m.Content == "" && m.MediaType == "" {
+	if m.Untrusted.Content == "" && m.MediaType == "" {
 		return nil
 	}
 	if err := s.UpsertChat(ctx, m.ChatJID, "", m.Timestamp); err != nil {
@@ -128,7 +140,7 @@ func (s *Store) StoreMessage(ctx context.Context, m *MessageRow) error {
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path,
 		 media_key, file_sha256, file_enc_sha256, file_length, mimetype)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.ChatJID, m.Sender, m.Content, m.Timestamp.UTC(), m.IsFromMe, m.MediaType, m.Filename,
+		m.ID, m.ChatJID, m.Sender, m.Untrusted.Content, m.Timestamp.UTC(), m.IsFromMe, m.MediaType, m.Untrusted.Filename,
 		m.URL, m.DirectPath, m.MediaKey, m.FileSHA256, m.FileEncSHA256, m.FileLength, m.Mimetype)
 	return err
 }
@@ -149,7 +161,7 @@ func scanMessages(rows *sql.Rows) ([]MessageRow, error) {
 	out := []MessageRow{}
 	for rows.Next() {
 		var m MessageRow
-		if err := rows.Scan(&m.ID, &m.ChatJID, &m.ChatName, &m.Sender, &m.Content, &m.Timestamp, &m.IsFromMe, &m.MediaType, &m.Filename); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChatJID, &m.Untrusted.ChatName, &m.Sender, &m.Untrusted.Content, &m.Timestamp, &m.IsFromMe, &m.MediaType, &m.Untrusted.Filename); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -259,7 +271,7 @@ func scanChats(rows *sql.Rows, includeLast bool) ([]ChatRow, error) {
 		var last sql.NullTime
 		var content, sender sql.NullString
 		var fromMe sql.NullBool
-		if err := rows.Scan(&c.JID, &c.Name, &last, &content, &sender, &fromMe); err != nil {
+		if err := rows.Scan(&c.JID, &c.Untrusted.Name, &last, &content, &sender, &fromMe); err != nil {
 			return nil, err
 		}
 		if last.Valid {
@@ -267,7 +279,7 @@ func scanChats(rows *sql.Rows, includeLast bool) ([]ChatRow, error) {
 			c.LastMessageTime = &t
 		}
 		if includeLast {
-			c.LastMessage, c.LastSender = content.String, sender.String
+			c.Untrusted.LastMessage, c.LastSender = content.String, sender.String
 			if fromMe.Valid {
 				b := fromMe.Bool
 				c.LastIsFromMe = &b
@@ -368,7 +380,7 @@ func (s *Store) GetMediaMessage(ctx context.Context, id, chatJID string) (*Messa
 	var m MessageRow
 	err := s.db.QueryRowContext(ctx, `SELECT id, chat_jid, media_type, filename, url, direct_path, media_key,
 		file_sha256, file_enc_sha256, file_length, mimetype FROM messages WHERE id = ? AND chat_jid = ?`, id, chatJID).
-		Scan(&m.ID, &m.ChatJID, &m.MediaType, &m.Filename, &m.URL, &m.DirectPath, &m.MediaKey,
+		Scan(&m.ID, &m.ChatJID, &m.MediaType, &m.Untrusted.Filename, &m.URL, &m.DirectPath, &m.MediaKey,
 			&m.FileSHA256, &m.FileEncSHA256, &m.FileLength, &m.Mimetype)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errors.New("message not found")
@@ -380,6 +392,44 @@ func (s *Store) GetMediaMessage(ctx context.Context, id, chatJID string) (*Messa
 		return nil, errors.New("message has no media")
 	}
 	return &m, nil
+}
+
+// Prune deletes messages older than cutoff, then chats left without messages that were last active
+// before cutoff, and returns the freed pages to the file system (incremental vacuum).
+func (s *Store) Prune(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE timestamp < ?`, cutoff.UTC())
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM chats WHERE jid NOT IN (SELECT DISTINCT chat_jid FROM messages)
+		AND (last_message_time IS NULL OR last_message_time < ?)`, cutoff.UTC()); err != nil {
+		return n, err
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA incremental_vacuum`); err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+// RunRetention prunes every interval until ctx ends. days <= 0 disables it.
+func (s *Store) RunRetention(ctx context.Context, days int, interval time.Duration, log *slog.Logger) {
+	if days <= 0 {
+		return
+	}
+	for {
+		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+		if n, err := s.Prune(ctx, cutoff); err != nil {
+			log.Warn("message retention failed", "error", err)
+		} else if n > 0 {
+			log.Info("message retention: deleted old messages", "count", n, "older_than_days", days)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+	}
 }
 
 // Counts returns the number of chats and messages (for the status page).

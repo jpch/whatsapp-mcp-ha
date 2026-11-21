@@ -77,11 +77,27 @@ jobs:
             io.hass.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.source=https://github.com/jpch/whatsapp-mcp-ha
           load: true
+      - name: Load the add-on AppArmor profile
+        id: aa
+        run: |
+          if [ "$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null)" = "Y" ]; then
+            sed 's/^profile whatsapp_mcp /profile ci_whatsapp_mcp /' whatsapp_mcp/apparmor.txt > "$RUNNER_TEMP/aa.txt"
+            sudo apparmor_parser -r -W "$RUNNER_TEMP/aa.txt"
+            echo "opt=--security-opt apparmor=ci_whatsapp_mcp" >> "$GITHUB_OUTPUT"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::AppArmor is not enabled on this runner; smoke test runs without the profile"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Smoke test (never contacts WhatsApp)
+        env:
+          AA_OPT: ${{ steps.aa.outputs.opt }}
+          AA_ENABLED: ${{ steps.aa.outputs.enabled }}
         run: |
           set -eu
           token=$(head -c 32 /dev/urandom | base64 | tr -d '/+=\n')
-          docker run -d --name smoke -p 127.0.0.1:8120:8120 \
+          # shellcheck disable=SC2086
+          docker run -d --name smoke $AA_OPT -p 127.0.0.1:8120:8120 \
             -e WA_MCP_NO_CONNECT=1 -e WA_MCP_TOKEN="$token" whatsapp-mcp:test
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8120/healthz && break; sleep 1; done
           docker exec smoke uname -m
@@ -94,17 +110,36 @@ jobs:
           list='{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
           curl -fsS -X POST http://127.0.0.1:8120/mcp -H "Authorization: Bearer $token" \
             -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-            -H 'MCP-Protocol-Version: 2025-06-18' -d "$list" | tee tools.json
+            -H 'MCP-Protocol-Version: 2025-06-18' -d "$list" > tools.json
           grep -q '"send_message"' tools.json
           grep -q '"list_chats"' tools.json
+          grep -q '"untrusted"' tools.json
           # Token, data files and the database must not be readable by others; the token never appears in the log.
-          docker exec smoke sh -c 'stat -c "%a %n" /data /data/messages.db /data/whatsmeow.db /data/auth_token 2>/dev/null || true'
           test "$(docker exec smoke stat -c %a /data)" = 700
           test "$(docker exec smoke stat -c %a /data/messages.db)" = 600
           test "$(docker exec smoke stat -c %a /data/whatsmeow.db)" = 600
           ! docker logs smoke 2>&1 | grep -qF "$token"
+          if [ "$AA_ENABLED" = "true" ]; then
+            # The server runs in the confined child profile and cannot write outside /data and /share/whatsapp-mcp.
+            label=$(docker exec smoke sh -c 'cat /proc/$(pidof whatsapp-mcp)/attr/current')
+            echo "server profile: $label"
+            echo "$label" | grep -q '^ci_whatsapp_mcp//whatsapp_mcp_server (enforce)'
+            if docker exec -e WA_MCP_NO_CONNECT=1 -e WA_MCP_TOKEN="$token" -e WA_MCP_LISTEN=127.0.0.1:18999 \
+                 -e WA_MCP_DATA_DIR=/opt/evil smoke timeout 20 /usr/bin/whatsapp-mcp; then
+              echo "server wrote outside its allowed folders"; exit 1
+            fi
+            ! docker exec smoke test -e /opt/evil
+          fi
           docker logs smoke 2>&1 | tail -n 20
           docker image inspect whatsapp-mcp:test --format '{{.Architecture}} {{.Size}}'
+      - name: Invalid configuration stops the container (exit 2, no restart loop)
+        run: |
+          set -eu
+          docker run -d --name badcfg -e WA_MCP_NO_CONNECT=1 -e WA_MCP_TOKEN=short whatsapp-mcp:test
+          for i in $(seq 1 30); do [ "$(docker inspect -f '{{.State.Running}}' badcfg)" = false ] && break; sleep 1; done
+          code=$(docker inspect -f '{{.State.ExitCode}}' badcfg)
+          docker logs badcfg 2>&1 | tail -n 5
+          test "$code" = 2
       - name: Publish to ghcr.io (main and tags, only when PUBLISH_IMAGES is set)
         if: vars.PUBLISH_IMAGES == 'true' && github.event_name == 'push'
         env:

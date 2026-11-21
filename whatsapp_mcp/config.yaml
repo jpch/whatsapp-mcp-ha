@@ -15,6 +15,8 @@ ingress_port: 8121
 panel_icon: mdi:whatsapp
 panel_title: WhatsApp MCP
 panel_admin: true
+# Restarts the add-on if the MCP endpoint stops answering.
+watchdog: http://[HOST]:[PORT:8120]/healthz
 # The MCP endpoint is reachable from other add-ons (e.g. cloudflared) by the add-on hostname.
 # It is not published on the host unless you set a host port in the Network section.
 ports:
@@ -28,15 +30,20 @@ map:
 options:
   enable_send: true
   send_rate_per_minute: 6
-  send_daily_limit: 100
+  send_daily_limit: 50
+  allowed_recipients: []
   allow_media_download: false
   max_media_mb: 16
+  retention_days: 0
   log_level: info
 schema:
   auth_token: password?
   enable_send: bool
   send_rate_per_minute: int(1,60)
   send_daily_limit: int(1,10000)
+  allowed_recipients:
+    - str
   allow_media_download: bool
   max_media_mb: int(1,100)
+  retention_days: int(0,3650)
   log_level: list(debug|info|warning|error)

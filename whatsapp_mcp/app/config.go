@@ -17,6 +17,26 @@ import (
 // MinTokenLength is the minimum length of a user-provided bearer token.
 const MinTokenLength = 32
 
+// MinTokenDistinct is the minimum number of different characters in a user-provided token.
+const MinTokenDistinct = 10
+
+// isRepetitive reports tokens made of a short repeated pattern (e.g. "abcabcabc…").
+func isRepetitive(s string) bool {
+	for period := 1; period <= 8 && period < len(s); period++ {
+		rep := true
+		for i := period; i < len(s); i++ {
+			if s[i] != s[i-period] {
+				rep = false
+				break
+			}
+		}
+		if rep {
+			return true
+		}
+	}
+	return false
+}
+
 // Config is the runtime configuration. In the Home Assistant add-on it comes from
 // /data/options.json; for a plain Docker run it comes from WA_MCP_* environment variables.
 type Config struct {
@@ -28,6 +48,10 @@ type Config struct {
 	AllowMediaDownload bool
 	MaxMediaMB         int
 	LogLevel           slog.Level
+	// AllowedRecipients, when non-empty, are the only chats the send tools may write to (canonical JIDs).
+	AllowedRecipients map[string]bool
+	// RetentionDays deletes stored messages older than this many days; 0 keeps everything.
+	RetentionDays int
 
 	DataDir  string // whatsmeow session and message database
 	MediaDir string // outbox/ (files that may be sent) and downloads/
@@ -41,13 +65,15 @@ type Config struct {
 }
 
 type addonOptions struct {
-	AuthToken          *string `json:"auth_token"`
-	EnableSend         *bool   `json:"enable_send"`
-	SendPerMinute      *int    `json:"send_rate_per_minute"`
-	SendPerDay         *int    `json:"send_daily_limit"`
-	AllowMediaDownload *bool   `json:"allow_media_download"`
-	MaxMediaMB         *int    `json:"max_media_mb"`
-	LogLevel           *string `json:"log_level"`
+	AuthToken          *string  `json:"auth_token"`
+	EnableSend         *bool    `json:"enable_send"`
+	SendPerMinute      *int     `json:"send_rate_per_minute"`
+	SendPerDay         *int     `json:"send_daily_limit"`
+	AllowMediaDownload *bool    `json:"allow_media_download"`
+	MaxMediaMB         *int     `json:"max_media_mb"`
+	LogLevel           *string  `json:"log_level"`
+	AllowedRecipients  []string `json:"allowed_recipients"`
+	RetentionDays      *int     `json:"retention_days"`
 }
 
 // LoadConfig reads options.json if present, otherwise the environment.
@@ -55,7 +81,7 @@ func LoadConfig(optionsPath string, getenv func(string) string) (*Config, error)
 	cfg := &Config{
 		EnableSend:     true,
 		SendPerMinute:  6,
-		SendPerDay:     100,
+		SendPerDay:     50,
 		MaxMediaMB:     16,
 		LogLevel:       slog.LevelInfo,
 		DataDir:        "/data",
@@ -96,6 +122,22 @@ func LoadConfig(optionsPath string, getenv func(string) string) (*Config, error)
 	}
 	if opts.MaxMediaMB != nil {
 		cfg.MaxMediaMB = *opts.MaxMediaMB
+	}
+	if opts.RetentionDays != nil {
+		cfg.RetentionDays = *opts.RetentionDays
+	}
+	for _, r := range opts.AllowedRecipients {
+		if strings.TrimSpace(r) == "" {
+			continue
+		}
+		jid, err := ParseRecipient(r)
+		if err != nil {
+			return nil, fmt.Errorf("allowed_recipients: %q: %w", r, err)
+		}
+		if cfg.AllowedRecipients == nil {
+			cfg.AllowedRecipients = map[string]bool{}
+		}
+		cfg.AllowedRecipients[jid.String()] = true
 	}
 	if opts.LogLevel != nil {
 		lvl, err := parseLevel(*opts.LogLevel)
@@ -174,6 +216,16 @@ func optionsFromEnv(o *addonOptions, getenv func(string) string) error {
 	if v := getenv("WA_MCP_LOG_LEVEL"); v != "" {
 		o.LogLevel = &v
 	}
+	if v := getenv("WA_MCP_ALLOWED_RECIPIENTS"); v != "" {
+		o.AllowedRecipients = strings.Split(v, ",")
+	}
+	if v := getenv("WA_MCP_RETENTION_DAYS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("WA_MCP_RETENTION_DAYS: %w", err)
+		}
+		o.RetentionDays = &n
+	}
 	return nil
 }
 
@@ -196,10 +248,15 @@ func (c *Config) validate() error {
 		if len(c.AuthToken) < MinTokenLength {
 			return fmt.Errorf("auth_token must be at least %d characters (leave it empty to generate one)", MinTokenLength)
 		}
+		distinct := map[rune]bool{}
 		for _, r := range c.AuthToken {
 			if r <= ' ' || r > '~' {
 				return errors.New("auth_token may only contain printable ASCII characters without spaces")
 			}
+			distinct[r] = true
+		}
+		if len(distinct) < MinTokenDistinct || isRepetitive(c.AuthToken) {
+			return errors.New("auth_token is too predictable: use a random value, e.g. from 'openssl rand -base64 32'")
 		}
 	}
 	if c.SendPerMinute < 1 || c.SendPerMinute > 60 {
@@ -207,6 +264,9 @@ func (c *Config) validate() error {
 	}
 	if c.SendPerDay < 1 || c.SendPerDay > 10000 {
 		return errors.New("send_daily_limit must be between 1 and 10000")
+	}
+	if c.RetentionDays < 0 || c.RetentionDays > 3650 {
+		return errors.New("retention_days must be between 0 (keep) and 3650")
 	}
 	if c.MaxMediaMB < 1 || c.MaxMediaMB > 100 {
 		return errors.New("max_media_mb must be between 1 and 100")
@@ -241,17 +301,33 @@ func (c *Config) EnsureToken() error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read generated token: %w", err)
 	}
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
+	tok, err := GenerateToken(c.DataDir)
+	if err != nil {
 		return err
-	}
-	tok := base64.RawURLEncoding.EncodeToString(buf)
-	if err := os.MkdirAll(c.DataDir, 0o700); err != nil {
-		return err
-	}
-	if err := os.WriteFile(path, []byte(tok+"\n"), 0o600); err != nil {
-		return fmt.Errorf("store generated token: %w", err)
 	}
 	c.AuthToken, c.TokenGenerated = tok, true
 	return nil
 }
+
+// GenerateToken creates a 256-bit token in dataDir/auth_token (0600) and clears the "shown" marker.
+func GenerateToken(dataDir string) (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	tok := base64.RawURLEncoding.EncodeToString(buf)
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return "", err
+	}
+	tmp := filepath.Join(dataDir, "auth_token.tmp")
+	if err := os.WriteFile(tmp, []byte(tok+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("store generated token: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(dataDir, "auth_token")); err != nil {
+		return "", fmt.Errorf("store generated token: %w", err)
+	}
+	_ = os.Remove(filepath.Join(dataDir, tokenShownFile))
+	return tok, nil
+}
+
+const tokenShownFile = "auth_token_shown"

@@ -6,7 +6,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
@@ -29,8 +31,18 @@ type PageController interface {
 // NewPageHandler serves the pairing page for Home Assistant ingress. Only the ingress proxy
 // address may connect (Home Assistant has already authenticated the user); state-changing
 // requests also need a custom header, which browsers cannot send cross-site without CORS.
-func NewPageHandler(cfg *Config, store *Store, wa PageController) http.Handler {
+//
+// Every Home Assistant ingress page is served from the same origin, so a page of another add-on that an
+// administrator opens could call these endpoints too. A generated token is therefore revealed only once;
+// after that it can only be replaced (rotated), which also reveals the new one once.
+func NewPageHandler(cfg *Config, store *Store, wa PageController, auth *Authenticator) http.Handler {
 	hostname, _ := os.Hostname()
+	var tokMu sync.Mutex
+	shownPath := filepath.Join(cfg.DataDir, tokenShownFile)
+	tokenShown := func() bool {
+		_, err := os.Stat(shownPath)
+		return err == nil
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -50,6 +62,7 @@ func NewPageHandler(cfg *Config, store *Store, wa PageController) http.Handler {
 			"chats":           chats,
 			"messages":        msgs,
 			"token_generated": cfg.TokenGenerated,
+			"token_shown":     cfg.TokenGenerated && tokenShown(),
 			"send_enabled":    cfg.EnableSend,
 			"media_download":  cfg.AllowMediaDownload,
 			"internal_url":    "http://" + hostname + ":" + port + MCPPath,
@@ -71,11 +84,41 @@ func NewPageHandler(cfg *Config, store *Store, wa PageController) http.Handler {
 		_, _ = w.Write(png)
 	})
 	mux.HandleFunc("POST /api/token", func(w http.ResponseWriter, r *http.Request) {
+		tokMu.Lock()
+		defer tokMu.Unlock()
 		if !cfg.TokenGenerated {
-			writeJSON(w, http.StatusOK, map[string]any{"token": nil})
+			writeJSON(w, http.StatusOK, map[string]any{"token": nil, "reason": "configured"})
+			return
+		}
+		if tokenShown() {
+			writeJSON(w, http.StatusOK, map[string]any{"token": nil, "reason": "already_shown"})
+			return
+		}
+		if err := os.WriteFile(shownPath, nil, 0o600); err != nil {
+			http.Error(w, "cannot record that the token was shown", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"token": cfg.AuthToken})
+	})
+	mux.HandleFunc("POST /api/token/rotate", func(w http.ResponseWriter, r *http.Request) {
+		tokMu.Lock()
+		defer tokMu.Unlock()
+		if !cfg.TokenGenerated {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "auth_token is set in the configuration; change it there"})
+			return
+		}
+		tok, err := GenerateToken(cfg.DataDir)
+		if err != nil {
+			http.Error(w, "cannot generate a token", http.StatusInternalServerError)
+			return
+		}
+		cfg.AuthToken = tok
+		auth.SetToken(tok)
+		if err := os.WriteFile(shownPath, nil, 0o600); err != nil {
+			http.Error(w, "cannot record that the token was shown", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"token": tok})
 	})
 	mux.HandleFunc("POST /api/pair", func(w http.ResponseWriter, r *http.Request) {
 		wa.RequestPairing()

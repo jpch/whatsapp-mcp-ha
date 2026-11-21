@@ -12,10 +12,10 @@ func seed(t *testing.T, s *Store) {
 	s.UpsertChat(ctx, "111111111@s.whatsapp.net", "Alice", time.Time{})
 	s.UpsertChat(ctx, "123-456@g.us", "Family", time.Time{})
 	msgs := []MessageRow{
-		{ID: "A1", ChatJID: "111111111@s.whatsapp.net", Sender: "111111111@s.whatsapp.net", Content: "hello there", Timestamp: base},
-		{ID: "A2", ChatJID: "111111111@s.whatsapp.net", Sender: "999999999@s.whatsapp.net", Content: "hi Alice", Timestamp: base.Add(time.Minute), IsFromMe: true},
-		{ID: "G1", ChatJID: "123-456@g.us", Sender: "111111111@s.whatsapp.net", Content: "100% sure_thing", Timestamp: base.Add(2 * time.Minute)},
-		{ID: "G2", ChatJID: "123-456@g.us", Sender: "222222222@s.whatsapp.net", Content: "", MediaType: "image", Filename: "image.jpg",
+		{ID: "A1", ChatJID: "111111111@s.whatsapp.net", Sender: "111111111@s.whatsapp.net", Untrusted: MessageText{Content: "hello there"}, Timestamp: base},
+		{ID: "A2", ChatJID: "111111111@s.whatsapp.net", Sender: "999999999@s.whatsapp.net", Untrusted: MessageText{Content: "hi Alice"}, Timestamp: base.Add(time.Minute), IsFromMe: true},
+		{ID: "G1", ChatJID: "123-456@g.us", Sender: "111111111@s.whatsapp.net", Untrusted: MessageText{Content: "100% sure_thing"}, Timestamp: base.Add(2 * time.Minute)},
+		{ID: "G2", ChatJID: "123-456@g.us", Sender: "222222222@s.whatsapp.net", MediaType: "image", Untrusted: MessageText{Filename: "image.jpg"},
 			Timestamp: base.Add(3 * time.Minute), DirectPath: "/x", MediaKey: []byte{1}, FileLength: 10},
 		{ID: "E1", ChatJID: "123-456@g.us", Sender: "x@s.whatsapp.net", Timestamp: base},
 	}
@@ -35,7 +35,7 @@ func TestStoreQueries(t *testing.T) {
 		t.Fatalf("list all: %+v", all)
 	}
 	q, _ := s.ListMessages(ctx, ListMessagesParams{Query: "HELLO", Limit: 10})
-	if len(q) != 1 || q[0].ChatName != "Alice" {
+	if len(q) != 1 || q[0].Untrusted.ChatName != "Alice" {
 		t.Fatalf("query: %+v", q)
 	}
 	// LIKE wildcards are literal.
@@ -57,11 +57,11 @@ func TestStoreQueries(t *testing.T) {
 		t.Fatalf("page: %+v", p)
 	}
 	chats, _ := s.ListChats(ctx, "", 10, 0, true, "last_active")
-	if len(chats) != 2 || chats[0].JID != "123-456@g.us" || !chats[0].IsGroup || chats[0].LastMessage != "" || chats[1].LastMessage != "hi Alice" {
+	if len(chats) != 2 || chats[0].JID != "123-456@g.us" || !chats[0].IsGroup || chats[0].Untrusted.LastMessage != "" || chats[1].Untrusted.LastMessage != "hi Alice" {
 		t.Fatalf("chats: %+v", chats)
 	}
 	byName, _ := s.ListChats(ctx, "", 10, 0, false, "name")
-	if byName[0].Name != "Alice" || byName[0].LastMessage != "" {
+	if byName[0].Untrusted.Name != "Alice" || byName[0].Untrusted.LastMessage != "" {
 		t.Fatalf("chats by name: %+v", byName)
 	}
 	c, err := s.GetMessageContext(ctx, "A2", "", 5, 5)
@@ -93,7 +93,27 @@ func TestStoreQueries(t *testing.T) {
 	// Name is kept when an update has no name; last time only moves forward.
 	s.UpsertChat(ctx, "111111111@s.whatsapp.net", "", time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 	ch, _ := s.GetChat(ctx, "111111111@s.whatsapp.net", false)
-	if ch.Name != "Alice" || ch.LastMessageTime.Year() != 2026 {
+	if ch.Untrusted.Name != "Alice" || ch.LastMessageTime.Year() != 2026 {
 		t.Fatalf("upsert: %+v", ch)
+	}
+}
+
+func TestPruneRetention(t *testing.T) {
+	s := testStore(t)
+	seed(t, s)
+	ctx := context.Background()
+	var av int
+	s.db.QueryRow(`PRAGMA auto_vacuum`).Scan(&av)
+	if av != 2 {
+		t.Fatalf("auto_vacuum = %d, want 2 (incremental)", av)
+	}
+	cutoff := time.Date(2026, 11, 1, 10, 2, 30, 0, time.UTC) // keeps only G2
+	n, err := s.Prune(ctx, cutoff)
+	if err != nil || n != 3 {
+		t.Fatalf("pruned %d, %v", n, err)
+	}
+	chats, _ := s.ListChats(ctx, "", 10, 0, false, "")
+	if len(chats) != 1 || chats[0].JID != "123-456@g.us" {
+		t.Fatalf("chats after prune: %+v", chats)
 	}
 }

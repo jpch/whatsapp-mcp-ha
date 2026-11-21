@@ -17,11 +17,16 @@ Independent project, not affiliated with WhatsApp or Meta. The tool set and mess
 
 1. **Settings → Add-ons → Add-on store → ⋮ → Repositories**, add `https://github.com/jpch/whatsapp-mcp-ha`.
 2. Install **WhatsApp MCP**. The first install builds the image on the device and takes a few minutes.
-3. Optional: in **Configuration**, set `auth_token` (32+ printable characters, e.g. `openssl rand -base64 32`).
-   If you leave it empty, the add-on generates one and shows it on its page.
+3. In **Configuration**:
+   - Recommended: set `allowed_recipients` to the numbers/groups agents may write to (see the warning below).
+   - Optional: set `auth_token` (32+ random printable characters, e.g. `openssl rand -base64 32`). If you leave
+     it empty, the add-on generates one and shows it **once** on its page.
 4. **Start** the add-on and open **Open Web UI** (or the sidebar entry **WhatsApp MCP**, administrators only).
 5. On your phone: **WhatsApp → Settings → Linked devices → Link a device**, and scan the QR code shown on the page.
    The same QR code is printed in the add-on **Log**. The page shows **Connected** when done.
+
+A watchdog restarts the add-on if the endpoint stops answering. An invalid configuration stops the add-on with
+the error in the log instead of restarting it.
 
 If the QR codes expire, press **Show a new QR code** on the page (or restart the add-on). If WhatsApp unlinks the
 device (from the phone, or after a long time offline), the add-on goes back to showing a QR code. **Unlink this
@@ -65,6 +70,9 @@ Do not forward the port on your router.
 | `send_audio_message` | an Ogg Opus `.ogg` file from the outbox as a voice note |
 | `download_media` | only when `allow_media_download` is on; saves into `/share/whatsapp-mcp/downloads` |
 
+Message text, captions, file names and contact, chat and group names are returned inside an `untrusted` object
+in every result, so agents can tell other people's words from data they may act on.
+
 Only messages received while the add-on runs, plus what WhatsApp sends in the history sync after pairing, are
 searchable.
 
@@ -78,10 +86,15 @@ voice notes must already be Ogg Opus (no ffmpeg in the image); passkey pairing i
 | `auth_token` | empty | bearer token; empty = generated, shown on the add-on page |
 | `enable_send` | `true` | `false` hides and disables all send tools (read-only server) |
 | `send_rate_per_minute` | `6` | sends per minute, all clients together |
-| `send_daily_limit` | `100` | sends per rolling 24 hours |
+| `send_daily_limit` | `50` | sends per rolling 24 hours |
+| `allowed_recipients` | empty (anyone) | phone numbers (country code, digits) or JIDs the send tools may write to; **recommended** |
 | `allow_media_download` | `false` | enables `download_media` |
-| `max_media_mb` | `16` | largest file sent or downloaded |
+| `max_media_mb` | `16` | largest file sent or downloaded (also caps media downloads from WhatsApp's servers) |
+| `retention_days` | `0` | delete stored messages older than this; `0` keeps everything |
 | `log_level` | `info` | message contents and tokens are never logged |
+
+`allowed_recipients` is compared with the recipient exactly as the agent passes it (normalised to a JID): a phone
+number allows `…@s.whatsapp.net`; if a contact is addressed by its `…@lid` JID, list that form as well.
 
 **Sending files:** copy them to `/share/whatsapp-mcp/outbox/` (e.g. with the Samba or File editor add-on) and pass
 the file name as `media_path`. Paths outside that folder, `..` and symlinks pointing out of it are refused.
@@ -101,7 +114,7 @@ docker logs -f whatsapp-mcp   # scan the QR code printed here
 
 Use `aarch64-base` on ARM. Without `WA_MCP_TOKEN` a token is generated into `data/auth_token`. Other variables:
 `WA_MCP_ENABLE_SEND`, `WA_MCP_SEND_RATE_PER_MINUTE`, `WA_MCP_SEND_DAILY_LIMIT`, `WA_MCP_ALLOW_MEDIA_DOWNLOAD`,
-`WA_MCP_MAX_MEDIA_MB`, `WA_MCP_LOG_LEVEL`. The pairing page is off in plain Docker (it has no login of its own).
+`WA_MCP_MAX_MEDIA_MB`, `WA_MCP_LOG_LEVEL`, `WA_MCP_ALLOWED_RECIPIENTS` (comma-separated), `WA_MCP_RETENTION_DAYS`. The pairing page is off in plain Docker (it has no login of its own).
 To re-pair after an unlink, run `docker restart whatsapp-mcp` and scan the new code from the log.
 
 ## Security
@@ -111,8 +124,17 @@ required (constant-time check, failed attempts throttled), no other routes on th
 through Home Assistant ingress for administrators, sends rate limited, file sending confined to the outbox,
 media download off by default, message contents and tokens never logged, session files readable by the owner only.
 
-Message contents are untrusted input for the agent (prompt injection). Be careful what an agent with send tools
-may do on its own, or set `enable_send: false`.
+**Warning: prompt injection.** Anyone who can message you can write text that tries to make an agent send
+messages or files on your behalf. Send tools are on by default because this add-on is meant to send. To limit the
+damage, set `allowed_recipients` to the chats agents should write to, keep the send limits low, keep only files you
+are happy to share in the outbox, or set `enable_send: false` for a read-only server. Prefer agents that ask you
+before sending.
+
+**Generated token and other add-ons.** All Home Assistant ingress pages share one browser origin, so a page of
+another add-on that you open could call this add-on's page too. That is why a generated token is shown only once
+(and can only be replaced afterwards). Setting your own `auth_token` avoids showing it at all.
+
+Writes of the server process are confined by an AppArmor profile to `/data` and `/share/whatsapp-mcp`.
 
 ## License
 

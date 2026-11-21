@@ -76,3 +76,38 @@ func TestGeneratedTokenPersisted(t *testing.T) {
 		t.Fatal("configured token replaced")
 	}
 }
+
+func TestWeakTokensRejected(t *testing.T) {
+	for _, tok := range []string{strings.Repeat("a", 40), strings.Repeat("abc", 15), strings.Repeat("01234567", 5), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabcd"} {
+		if _, err := LoadConfig(filepath.Join(t.TempDir(), "missing.json"), envMap(map[string]string{"WA_MCP_TOKEN": tok})); err == nil {
+			t.Errorf("weak token %q accepted", tok)
+		}
+	}
+	if _, err := LoadConfig(filepath.Join(t.TempDir(), "missing.json"), envMap(map[string]string{"WA_MCP_TOKEN": "Zq3vR8kP1xW7mN4tY6bC9dF2gH5jL0sA"})); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAllowedRecipientsAndRetention(t *testing.T) {
+	dir := t.TempDir()
+	opts := filepath.Join(dir, "options.json")
+	os.WriteFile(opts, []byte(`{"allowed_recipients":["+351900000000","123-456@g.us",""],"retention_days":30}`), 0o600)
+	cfg, err := LoadConfig(opts, envMap(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AllowedRecipients) != 2 || !cfg.AllowedRecipients["351900000000@s.whatsapp.net"] || cfg.RetentionDays != 30 || cfg.SendPerDay != 50 {
+		t.Fatalf("%+v", cfg)
+	}
+	os.WriteFile(opts, []byte(`{"allowed_recipients":["status@broadcast"]}`), 0o600)
+	if _, err := LoadConfig(opts, envMap(nil)); err == nil {
+		t.Fatal("invalid allowed recipient accepted")
+	}
+	if _, err := LoadConfig(filepath.Join(dir, "missing.json"), envMap(map[string]string{"WA_MCP_RETENTION_DAYS": "-1"})); err == nil {
+		t.Fatal("negative retention accepted")
+	}
+	cfg, _ = LoadConfig(filepath.Join(dir, "missing.json"), envMap(map[string]string{"WA_MCP_ALLOWED_RECIPIENTS": "351911111111,1-2@g.us"}))
+	if len(cfg.AllowedRecipients) != 2 {
+		t.Fatalf("env allowlist: %+v", cfg.AllowedRecipients)
+	}
+}

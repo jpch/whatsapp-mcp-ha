@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -20,12 +21,14 @@ const MCPPath = "/mcp"
 
 // Authenticator checks bearer tokens in constant time and slows down repeated failures.
 type Authenticator struct {
-	want [32]byte
+	want atomic.Pointer[[32]byte]
 	log  *slog.Logger
 
-	mu       sync.Mutex
-	failures map[string]*failEntry
-	now      func() time.Time
+	mu         sync.Mutex
+	failures   map[string]*failEntry
+	now        func() time.Time
+	logLimit   *rate.Limiter // failed-auth log lines, all clients together
+	suppressed int
 }
 
 type failEntry struct {
@@ -34,7 +37,16 @@ type failEntry struct {
 }
 
 func NewAuthenticator(token string, log *slog.Logger) *Authenticator {
-	return &Authenticator{want: sha256.Sum256([]byte(token)), log: log, failures: map[string]*failEntry{}, now: time.Now}
+	a := &Authenticator{log: log, failures: map[string]*failEntry{}, now: time.Now,
+		logLimit: rate.NewLimiter(rate.Every(10*time.Second), 5)}
+	a.SetToken(token)
+	return a
+}
+
+// SetToken replaces the accepted token (token rotation from the add-on page).
+func (a *Authenticator) SetToken(token string) {
+	h := sha256.Sum256([]byte(token))
+	a.want.Store(&h)
 }
 
 // Check returns true if the Authorization header carries the token ("Bearer <token>").
@@ -44,7 +56,8 @@ func (a *Authenticator) Check(header string) bool {
 		tok = ""
 	}
 	got := sha256.Sum256([]byte(strings.TrimSpace(tok)))
-	match := subtle.ConstantTimeCompare(got[:], a.want[:]) == 1
+	want := a.want.Load()
+	match := subtle.ConstantTimeCompare(got[:], want[:]) == 1
 	return match && tok != ""
 }
 
@@ -78,14 +91,14 @@ func (a *Authenticator) recordFailure(key string) {
 	e := a.failures[key]
 	if e == nil {
 		if len(a.failures) >= maxFailEntries {
+			// Evict the least recently seen entry (never a full reset, which would clear every limit).
+			oldestKey, oldest := "", now
 			for k, v := range a.failures {
-				if now.Sub(v.seen) > 10*time.Minute {
-					delete(a.failures, k)
+				if v.seen.Before(oldest) || oldestKey == "" {
+					oldestKey, oldest = k, v.seen
 				}
 			}
-			if len(a.failures) >= maxFailEntries {
-				a.failures = map[string]*failEntry{}
-			}
+			delete(a.failures, oldestKey)
 		}
 		// 10 failed attempts, then one more every 6 seconds.
 		e = &failEntry{lim: rate.NewLimiter(rate.Every(6*time.Second), 10)}
@@ -93,6 +106,22 @@ func (a *Authenticator) recordFailure(key string) {
 	}
 	e.seen = now
 	e.lim.AllowN(now, 1)
+}
+
+// logFailure logs failed attempts with a global rate limit, so a flood cannot fill the log.
+func (a *Authenticator) logFailure(key string) {
+	a.mu.Lock()
+	allow := a.logLimit.AllowN(a.now(), 1)
+	suppressed := a.suppressed
+	if allow {
+		a.suppressed = 0
+	} else {
+		a.suppressed++
+	}
+	a.mu.Unlock()
+	if allow {
+		a.log.Warn("rejected MCP request without a valid token", "client", key, "suppressed_since_last", suppressed)
+	}
 }
 
 // Middleware rejects requests without the bearer token. Nothing about the token is logged.
@@ -106,7 +135,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		}
 		if !a.Check(r.Header.Get("Authorization")) {
 			a.recordFailure(key)
-			a.log.Warn("rejected MCP request without a valid token", "client", key)
+			a.logFailure(key)
 			w.Header().Set("WWW-Authenticate", `Bearer realm="whatsapp-mcp"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

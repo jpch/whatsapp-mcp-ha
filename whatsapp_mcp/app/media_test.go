@@ -88,3 +88,17 @@ func TestSymlinkedOutboxRefused(t *testing.T) {
 		t.Fatal("symlinked outbox accepted")
 	}
 }
+
+func TestOutboxBehindSymlinkedParentRefused(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	os.MkdirAll(filepath.Join(real, "outbox"), 0o755)
+	os.WriteFile(filepath.Join(real, "outbox", "a.pdf"), []byte("%PDF-1.4"), 0o644)
+	os.Symlink(real, filepath.Join(base, "media"))
+	if _, err := ReadOutboxFile(filepath.Join(base, "media", "outbox"), "a.pdf", 1<<20); err == nil {
+		t.Fatal("outbox reached through a symlinked parent accepted")
+	}
+	if _, err := ReadOutboxFile(filepath.Join(real, "outbox"), "a.pdf", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+}

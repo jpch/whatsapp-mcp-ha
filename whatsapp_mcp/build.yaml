@@ -1,3 +1,4 @@
+# Pinned by digest; bump tag and digest together.
 build_from:
-  aarch64: ghcr.io/home-assistant/aarch64-base:3.24
-  amd64: ghcr.io/home-assistant/amd64-base:3.24
+  aarch64: ghcr.io/home-assistant/aarch64-base:3.24-2026.11.0@sha256:48408ed8587f35994babee9ff7ef3e6c6fd3f87ea07fb1f4b11ff1c42401e92a
+  amd64: ghcr.io/home-assistant/amd64-base:3.24-2026.11.0@sha256:6cc6bcf640d8dfd238590c0404825f831401a7754febd0f9f9c0c68c82d955b3

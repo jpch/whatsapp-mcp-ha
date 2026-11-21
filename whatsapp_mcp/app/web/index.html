@@ -45,8 +45,12 @@
       <dt>Version</dt><dd id="version"></dd>
     </dl>
     <div id="tokenbox" class="hidden">
-      <p>No <code>auth_token</code> is set, so the add-on generated one. Copy it into your MCP client, or set your own in the add-on configuration.</p>
-      <p><button id="showtoken">Show token</button> <code id="token" class="hidden"></code></p>
+      <p>No <code>auth_token</code> is set, so the add-on generated one. It is shown <b>only once</b>, because pages of
+        other add-ons opened in Home Assistant share this page's origin. Copy it into your MCP client right away, or set
+        your own <code>auth_token</code> in the add-on configuration.</p>
+      <p id="shownote" class="hidden">The generated token was already shown. Generating a new one stops clients that use the old one.</p>
+      <p><button id="showtoken">Show token once</button> <button id="rotate">Generate a new token</button></p>
+      <p><code id="token" class="hidden"></code></p>
     </div>
   </section>
 </main>

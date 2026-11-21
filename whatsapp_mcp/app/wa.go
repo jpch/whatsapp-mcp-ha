@@ -169,6 +169,8 @@ func (m *Manager) Run(ctx context.Context) {
 			continue
 		}
 		client := whatsmeow.NewClient(device, newWALogger(m.log.With("module", "whatsmeow"), waMin))
+		// whatsmeow reads media into memory; bound downloads by max_media_mb (sender-controlled sizes).
+		client.SetMediaHTTPClient(newMediaHTTPClient(m.cfg.MaxMediaBytes()))
 		client.AddEventHandler(func(evt any) { m.handleEvent(client, evt) })
 		// A logout signal from a previous client must not end this one.
 		drain(m.loggedOut)
@@ -362,7 +364,7 @@ func (m *Manager) storeMessage(ctx context.Context, e *events.Message) bool {
 		Timestamp: e.Info.Timestamp, IsFromMe: e.Info.IsFromMe,
 	}
 	extractContent(e.Message, row)
-	if row.Content == "" && row.MediaType == "" {
+	if row.Untrusted.Content == "" && row.MediaType == "" {
 		return false
 	}
 	name := ""
@@ -435,36 +437,36 @@ func extractContent(msg *waE2E.Message, row *MessageRow) {
 	}
 	switch {
 	case msg.GetConversation() != "":
-		row.Content = msg.GetConversation()
+		row.Untrusted.Content = msg.GetConversation()
 	case msg.GetExtendedTextMessage() != nil:
-		row.Content = msg.GetExtendedTextMessage().GetText()
+		row.Untrusted.Content = msg.GetExtendedTextMessage().GetText()
 	case msg.GetImageMessage() != nil:
 		im := msg.GetImageMessage()
-		row.Content = im.GetCaption()
+		row.Untrusted.Content = im.GetCaption()
 		setMedia(row, "image", im)
-		row.Filename = "image" + extFor(im.GetMimetype())
+		row.Untrusted.Filename = "image" + extFor(im.GetMimetype())
 	case msg.GetVideoMessage() != nil:
 		vm := msg.GetVideoMessage()
-		row.Content = vm.GetCaption()
+		row.Untrusted.Content = vm.GetCaption()
 		setMedia(row, "video", vm)
-		row.Filename = "video" + extFor(vm.GetMimetype())
+		row.Untrusted.Filename = "video" + extFor(vm.GetMimetype())
 	case msg.GetAudioMessage() != nil:
 		am := msg.GetAudioMessage()
 		setMedia(row, "audio", am)
-		row.Filename = "audio" + extFor(am.GetMimetype())
+		row.Untrusted.Filename = "audio" + extFor(am.GetMimetype())
 	case msg.GetDocumentMessage() != nil:
 		dm := msg.GetDocumentMessage()
-		row.Content = dm.GetCaption()
+		row.Untrusted.Content = dm.GetCaption()
 		setMedia(row, "document", dm)
-		row.Filename = safeFileName(dm.GetFileName())
+		row.Untrusted.Filename = safeFileName(dm.GetFileName())
 	case msg.GetStickerMessage() != nil:
 		setMedia(row, "sticker", msg.GetStickerMessage())
-		row.Filename = "sticker.webp"
+		row.Untrusted.Filename = "sticker.webp"
 	case msg.GetLocationMessage() != nil:
 		lm := msg.GetLocationMessage()
-		row.Content = strings.TrimSpace(fmt.Sprintf("[location %.6f,%.6f] %s %s", lm.GetDegreesLatitude(), lm.GetDegreesLongitude(), lm.GetName(), lm.GetAddress()))
+		row.Untrusted.Content = strings.TrimSpace(fmt.Sprintf("[location %.6f,%.6f] %s %s", lm.GetDegreesLatitude(), lm.GetDegreesLongitude(), lm.GetName(), lm.GetAddress()))
 	case msg.GetContactMessage() != nil:
-		row.Content = "[contact] " + msg.GetContactMessage().GetDisplayName()
+		row.Untrusted.Content = "[contact] " + msg.GetContactMessage().GetDisplayName()
 	}
 }
 
@@ -558,7 +560,7 @@ func (m *Manager) SendText(ctx context.Context, to types.JID, text string) (*Mes
 	if err != nil {
 		return nil, fmt.Errorf("send failed: %w", err)
 	}
-	return m.recordSent(ctx, c, to, resp.ID, resp.Timestamp, &MessageRow{Content: text}), nil
+	return m.recordSent(ctx, c, to, resp.ID, resp.Timestamp, &MessageRow{Untrusted: MessageText{Content: text}}), nil
 }
 
 // SendFile implements WhatsApp.
@@ -611,7 +613,7 @@ func (m *Manager) SendFile(ctx context.Context, to types.JID, f *OutboxFile, cap
 	if err != nil {
 		return nil, fmt.Errorf("send failed: %w", err)
 	}
-	return m.recordSent(ctx, c, to, resp.ID, resp.Timestamp, &MessageRow{Content: caption, MediaType: string(f.Kind), Filename: f.Name}), nil
+	return m.recordSent(ctx, c, to, resp.ID, resp.Timestamp, &MessageRow{MediaType: string(f.Kind), Untrusted: MessageText{Content: caption, Filename: f.Name}}), nil
 }
 
 // Download implements WhatsApp: fetches and decrypts a stored media message.

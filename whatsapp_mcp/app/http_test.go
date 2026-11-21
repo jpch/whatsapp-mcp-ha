@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -217,7 +219,8 @@ func TestReadTools(t *testing.T) {
 		t.Fatalf("status: %v", st)
 	}
 	_, out := call(t, cs, "list_messages", map[string]any{"query": "hello"})
-	if msgs := out["messages"].([]any); len(msgs) != 1 || out["context"] == nil {
+	if msgs := out["messages"].([]any); len(msgs) != 1 || out["context"] == nil ||
+		msgs[0].(map[string]any)["untrusted"].(map[string]any)["content"] != "hello there" || msgs[0].(map[string]any)["content"] != nil {
 		t.Fatalf("list_messages: %v", out)
 	}
 	_, out = call(t, cs, "list_chats", map[string]any{"limit": 1})
@@ -225,7 +228,7 @@ func TestReadTools(t *testing.T) {
 		t.Fatalf("list_chats: %v", out)
 	}
 	_, out = call(t, cs, "search_contacts", map[string]any{"query": "bob"})
-	if c := out["contacts"].([]any); len(c) != 1 || c[0].(map[string]any)["phone_number"] != "333333333" {
+	if c := out["contacts"].([]any); len(c) != 1 || c[0].(map[string]any)["phone_number"] != "333333333" || c[0].(map[string]any)["untrusted"].(map[string]any)["name"] != "Bob Builder" {
 		t.Fatalf("search_contacts: %v", out)
 	}
 	_, out = call(t, cs, "search_contacts", map[string]any{"query": "alice"})
@@ -233,11 +236,11 @@ func TestReadTools(t *testing.T) {
 		t.Fatalf("search_contacts from chats: %v", out)
 	}
 	_, out = call(t, cs, "get_chat", map[string]any{"chat_jid": "123-456@g.us"})
-	if out["name"] != "Family" {
+	if out["untrusted"].(map[string]any)["name"] != "Family" {
 		t.Fatalf("get_chat: %v", out)
 	}
 	_, out = call(t, cs, "get_direct_chat_by_contact", map[string]any{"sender_phone_number": "+111111111"})
-	if out["name"] != "Alice" {
+	if out["untrusted"].(map[string]any)["name"] != "Alice" {
 		t.Fatalf("get_direct_chat_by_contact: %v", out)
 	}
 	_, out = call(t, cs, "get_message_context", map[string]any{"message_id": "A2", "chat_jid": "111111111@s.whatsapp.net"})
@@ -377,5 +380,77 @@ func TestParseRecipient(t *testing.T) {
 		if _, err := ParseRecipient(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+func TestAllowedRecipientsEnforced(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.AllowedRecipients = map[string]bool{"351900000000@s.whatsapp.net": true} })
+	os.WriteFile(filepath.Join(e.cfg.OutboxDir(), "pic.png"), pngBytes(), 0o644)
+	cs, err := e.session(t, e.cfg.AuthToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	if res, _ := call(t, cs, "send_message", map[string]any{"recipient": "+351900000000", "message": "ok"}); res.IsError {
+		t.Fatalf("allowed recipient refused: %s", errText(res))
+	}
+	res, _ := call(t, cs, "send_message", map[string]any{"recipient": "351911111111", "message": "no"})
+	if !res.IsError || !strings.Contains(errText(res), "allowed_recipients") {
+		t.Fatalf("other recipient: %s", errText(res))
+	}
+	if res, _ := call(t, cs, "send_file", map[string]any{"recipient": "123-456@g.us", "media_path": "pic.png"}); !res.IsError {
+		t.Fatal("file to a non-allowed group sent")
+	}
+	if len(e.wa.sent) != 1 || len(e.wa.files) != 0 {
+		t.Fatalf("sent %v files %d", e.wa.sent, len(e.wa.files))
+	}
+	_, st := call(t, cs, "get_status", nil)
+	if st["send_recipients_restricted"] != true {
+		t.Fatalf("status: %v", st)
+	}
+}
+
+func TestPageCapped(t *testing.T) {
+	if pageOf(-5) != 0 || pageOf(10) != 10 || pageOf(1<<40) != maxPage {
+		t.Fatal("pageOf")
+	}
+}
+
+func TestAuthEvictsOldestAndLimitsLogs(t *testing.T) {
+	var buf strings.Builder
+	a := NewAuthenticator("Zq3vR8kP1xW7mN4tY6bC9dF2gH5jL0sA", slog.New(slog.NewTextHandler(&buf, nil)))
+	now := time.Unix(0, 0)
+	a.now = func() time.Time { return now }
+	for i := 0; i < 10; i++ {
+		a.recordFailure("attacker")
+	}
+	if !a.limited("attacker") {
+		t.Fatal("attacker not limited")
+	}
+	// Filling the table with fresh keys evicts the oldest entries one by one and keeps the attacker's limit
+	// as long as the attacker is not the least recently seen.
+	now = now.Add(time.Second)
+	a.recordFailure("attacker")
+	for i := 0; i < maxFailEntries; i++ {
+		now = now.Add(time.Microsecond)
+		a.recordFailure("k" + strconv.Itoa(i))
+		if i == 10 {
+			a.recordFailure("attacker") // keeps hammering, so it is never the oldest
+		}
+	}
+	if len(a.failures) > maxFailEntries {
+		t.Fatalf("table grew to %d", len(a.failures))
+	}
+	if _, ok := a.failures["k0"]; ok {
+		t.Fatal("oldest key not evicted")
+	}
+	if !a.limited("attacker") {
+		t.Fatal("eviction cleared the attacker's limit")
+	}
+	for i := 0; i < 1000; i++ {
+		a.logFailure("x")
+	}
+	if n := strings.Count(buf.String(), "rejected MCP request"); n > 5 {
+		t.Fatalf("%d failed-auth log lines, want at most 5", n)
 	}
 }

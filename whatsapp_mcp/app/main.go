@@ -16,9 +16,18 @@ import (
 	"time"
 )
 
+// exitConfigError tells the s6 finish script to stop the add-on instead of restarting it.
+const exitConfigError = 2
+
+type configError struct{ error }
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("fatal", "error", err)
+		var ce configError
+		if errors.As(err, &ce) {
+			os.Exit(exitConfigError)
+		}
 		os.Exit(1)
 	}
 }
@@ -26,7 +35,7 @@ func main() {
 func run() error {
 	cfg, err := LoadConfig("/data/options.json", os.Getenv)
 	if err != nil {
-		return err
+		return configError{err}
 	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(log)
@@ -71,7 +80,7 @@ func run() error {
 	auth := NewAuthenticator(cfg.AuthToken, log)
 	servers := []*http.Server{newHTTPServer(cfg.Listen, NewMCPHandler(NewMCPServer(tools), auth))}
 	if cfg.PageListen != "" {
-		servers = append(servers, newHTTPServer(cfg.PageListen, NewPageHandler(cfg, store, mgr)))
+		servers = append(servers, newHTTPServer(cfg.PageListen, NewPageHandler(cfg, store, mgr, auth)))
 	}
 	errCh := make(chan error, len(servers))
 	for _, s := range servers {
@@ -82,7 +91,10 @@ func run() error {
 		}(s)
 	}
 	log.Info("WhatsApp MCP started", "version", Version, "mcp", cfg.Listen+MCPPath,
-		"send_tools", cfg.EnableSend, "media_download", cfg.AllowMediaDownload)
+		"send_tools", cfg.EnableSend, "media_download", cfg.AllowMediaDownload,
+		"allowed_recipients", len(cfg.AllowedRecipients), "retention_days", cfg.RetentionDays)
+
+	go store.RunRetention(ctx, cfg.RetentionDays, 6*time.Hour, log)
 
 	done := make(chan struct{})
 	if os.Getenv("WA_MCP_NO_CONNECT") == "1" {

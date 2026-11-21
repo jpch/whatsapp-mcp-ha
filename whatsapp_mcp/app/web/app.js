@@ -32,6 +32,8 @@ async function refresh() {
     $("counts").textContent = s.chats + " chats, " + s.messages + " messages";
     $("version").textContent = s.version;
     $("tokenbox").classList.toggle("hidden", !s.token_generated);
+    $("showtoken").classList.toggle("hidden", !!s.token_shown);
+    $("shownote").classList.toggle("hidden", !s.token_shown);
   } catch (e) {
     $("state").textContent = "add-on not reachable";
     $("state").className = "state bad";
@@ -44,10 +46,16 @@ $("logout").addEventListener("click", async () => {
   if (!r.ok) alert("Could not unlink: " + ((await r.json()).error || r.status));
   refresh();
 });
-$("showtoken").addEventListener("click", async () => {
-  const r = await post("api/token");
-  const j = await r.json();
+function showToken(j) {
   if (j.token) { $("token").textContent = j.token; $("token").classList.remove("hidden"); }
+  refresh();
+}
+$("showtoken").addEventListener("click", async () => {
+  showToken(await (await post("api/token")).json());
+});
+$("rotate").addEventListener("click", async () => {
+  if (!confirm("Generate a new token? MCP clients using the current token will stop working.")) return;
+  showToken(await (await post("api/token/rotate")).json());
 });
 refresh();
 setInterval(refresh, 3000);

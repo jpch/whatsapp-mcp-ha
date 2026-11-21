@@ -1,7 +1,10 @@
 #!/bin/sh
-# Stop the container when the server exits with an error (e.g. an invalid auth_token) instead of
-# restarting it in a loop. Home Assistant shows the error in the add-on log.
-if [ "$1" -ne 0 ] && [ "$1" -ne 256 ]; then
-  echo "$1" > /run/s6-linux-init-container-results/exitcode
+# Exit code 2 = invalid configuration: stop the add-on (the error is in the log) instead of restarting
+# it in a loop. Any other exit is restarted by s6 after a short pause.
+if [ "$1" -eq 2 ]; then
+  echo 2 > /run/s6-linux-init-container-results/exitcode
+  exec /run/s6/basedir/bin/halt
 fi
-exec /run/s6/basedir/bin/halt
+if [ "$1" -ne 0 ] && [ "$1" -ne 256 ]; then
+  sleep 5
+fi

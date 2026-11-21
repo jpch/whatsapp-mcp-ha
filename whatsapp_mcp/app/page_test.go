@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,7 +27,9 @@ func TestPageIngressOnly(t *testing.T) {
 	cfg.PageAllowedIPs = []net.IP{net.ParseIP("172.30.32.2")}
 	cfg.TokenGenerated = true
 	wa := &fakeWA{qr: "2@abc,def", status: Status{State: StateWaitingForQR}}
-	h := NewPageHandler(cfg, testStore(t), wa)
+	os.MkdirAll(cfg.DataDir, 0o700)
+	auth := NewAuthenticator(cfg.AuthToken, quietLog())
+	h := NewPageHandler(cfg, testStore(t), wa, auth)
 	ingress := "172.30.32.2:5555"
 	csrf := map[string]string{"X-Requested-With": "whatsapp-mcp"}
 
@@ -56,6 +61,26 @@ func TestPageIngressOnly(t *testing.T) {
 	if w := pageReq(h, "POST", "/api/token", ingress, csrf); w.Code != 200 || !strings.Contains(w.Body.String(), cfg.AuthToken) {
 		t.Fatalf("token: %d", w.Code)
 	}
+	// Shown only once.
+	if w := pageReq(h, "POST", "/api/token", ingress, csrf); strings.Contains(w.Body.String(), cfg.AuthToken) || !strings.Contains(w.Body.String(), "already_shown") {
+		t.Fatalf("token shown twice: %s", w.Body.String())
+	}
+	if w := pageReq(h, "GET", "/api/status", ingress, nil); !strings.Contains(w.Body.String(), `"token_shown":true`) {
+		t.Fatalf("status: %s", w.Body.String())
+	}
+	old := cfg.AuthToken
+	w := pageReq(h, "POST", "/api/token/rotate", ingress, csrf)
+	var rot struct{ Token string }
+	json.Unmarshal(w.Body.Bytes(), &rot)
+	if w.Code != 200 || rot.Token == "" || rot.Token == old || !auth.Check("Bearer "+rot.Token) || auth.Check("Bearer "+old) {
+		t.Fatalf("rotate: %d %s", w.Code, w.Body.String())
+	}
+	if b, _ := os.ReadFile(filepath.Join(cfg.DataDir, "auth_token")); strings.TrimSpace(string(b)) != rot.Token {
+		t.Fatal("rotated token not persisted")
+	}
+	if w := pageReq(h, "POST", "/api/token", ingress, csrf); strings.Contains(w.Body.String(), rot.Token) {
+		t.Fatal("rotated token shown again")
+	}
 	if w := pageReq(h, "GET", "/api/token", ingress, nil); w.Code != 405 {
 		t.Fatalf("GET token: %d", w.Code)
 	}
@@ -67,5 +92,8 @@ func TestPageIngressOnly(t *testing.T) {
 	cfg.TokenGenerated = false
 	if w := pageReq(h, "POST", "/api/token", ingress, csrf); strings.Contains(w.Body.String(), cfg.AuthToken) {
 		t.Fatal("configured token revealed")
+	}
+	if w := pageReq(h, "POST", "/api/token/rotate", ingress, csrf); w.Code != 409 {
+		t.Fatalf("rotate with configured token: %d", w.Code)
 	}
 }
