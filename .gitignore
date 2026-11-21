@@ -1,0 +1,6 @@
+/whatsapp_mcp/app/whatsapp-mcp
+*.db
+*.db-*
+*.log
+.env
+/data/
