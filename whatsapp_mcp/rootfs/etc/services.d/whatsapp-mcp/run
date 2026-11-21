@@ -1,0 +1,4 @@
+#!/usr/bin/with-contenv sh
+# Starts the WhatsApp MCP server (port 8120) and the pairing page (port 8121, ingress only).
+# Options come from /data/options.json (Home Assistant) or WA_MCP_* variables (plain Docker).
+exec /usr/bin/whatsapp-mcp

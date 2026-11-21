@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WhatsApp MCP</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; background: #f6f7f9; color: #1c1e21; }
+  main { max-width: 640px; margin: 0 auto; }
+  section { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  h1 { font-size: 1.4rem; margin: 0 0 16px; }
+  h2 { font-size: 1.05rem; margin: 0 0 12px; }
+  .state { font-weight: 600; }
+  .ok { color: #1a7f37; } .warn { color: #9a6700; } .bad { color: #cf222e; }
+  img#qr { display: block; width: 320px; height: 320px; margin: 12px auto; image-rendering: pixelated; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #c9ccd1; background: #fff; cursor: pointer; }
+  button.danger { border-color: #cf222e; color: #cf222e; }
+  code { background: #eef0f3; padding: 2px 6px; border-radius: 6px; word-break: break-all; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin: 0; }
+  dt { color: #57606a; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>WhatsApp MCP</h1>
+  <section>
+    <h2>Connection</h2>
+    <p>Status: <span id="state" class="state">loading…</span> <span id="account"></span></p>
+    <div id="pairing" class="hidden">
+      <p>Open WhatsApp on your phone, go to <b>Settings › Linked devices › Link a device</b> and scan this code.</p>
+      <img id="qr" alt="Pairing QR code">
+    </div>
+    <p id="newqr" class="hidden"><button id="pair">Show a new QR code</button></p>
+    <p id="unlink" class="hidden"><button id="logout" class="danger">Unlink this device</button></p>
+  </section>
+  <section>
+    <h2>MCP endpoint</h2>
+    <dl>
+      <dt>Internal URL</dt><dd><code id="url"></code></dd>
+      <dt>Header</dt><dd><code>Authorization: Bearer &lt;token&gt;</code></dd>
+      <dt>Send tools</dt><dd id="send"></dd>
+      <dt>Media download</dt><dd id="download"></dd>
+      <dt>Stored</dt><dd id="counts"></dd>
+      <dt>Version</dt><dd id="version"></dd>
+    </dl>
+    <div id="tokenbox" class="hidden">
+      <p>No <code>auth_token</code> is set, so the add-on generated one. Copy it into your MCP client, or set your own in the add-on configuration.</p>
+      <p><button id="showtoken">Show token</button> <code id="token" class="hidden"></code></p>
+    </div>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

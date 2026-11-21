@@ -1,0 +1,42 @@
+name: WhatsApp MCP
+version: "0.1.0"
+slug: whatsapp_mcp
+description: Your personal WhatsApp account, linked as a device like WhatsApp Web, as an MCP server over streamable HTTP with a bearer token.
+url: https://github.com/jpch/whatsapp-mcp-ha
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+# Pairing page (QR code, status, generated token): Home Assistant ingress only, administrators only.
+ingress: true
+ingress_port: 8121
+panel_icon: mdi:whatsapp
+panel_title: WhatsApp MCP
+panel_admin: true
+# The MCP endpoint is reachable from other add-ons (e.g. cloudflared) by the add-on hostname.
+# It is not published on the host unless you set a host port in the Network section.
+ports:
+  8120/tcp: null
+ports_description:
+  8120/tcp: MCP endpoint (/mcp, bearer token required)
+# /share/whatsapp-mcp/outbox: the only folder send_file can read. /share/whatsapp-mcp/downloads: download_media.
+map:
+  - type: share
+    read_only: false
+options:
+  enable_send: true
+  send_rate_per_minute: 6
+  send_daily_limit: 100
+  allow_media_download: false
+  max_media_mb: 16
+  log_level: info
+schema:
+  auth_token: password?
+  enable_send: bool
+  send_rate_per_minute: int(1,60)
+  send_daily_limit: int(1,10000)
+  allow_media_download: bool
+  max_media_mb: int(1,100)
+  log_level: list(debug|info|warning|error)
