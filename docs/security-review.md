@@ -63,10 +63,13 @@ An independent reviewer found no Critical or High issues. Findings and resolutio
 | No message retention | Low | `retention_days` (default 0 = keep): periodic `DELETE` + `PRAGMA incremental_vacuum` (`auto_vacuum=INCREMENTAL`). `TestPruneRetention`. |
 | Failed-auth log flood; full reset of the throttle table | Low | Global log rate limit with a suppressed counter; evict least recently seen entry. `TestAuthEvictsOldestAndLimitsLogs`. |
 | Check-then-open race on media folders | Low | Open the `os.Root` first, then compare its `Stat` with `Lstat` of the symlink-free path (`os.SameFile`, device + inode). `TestOutboxBehindSymlinkedParentRefused`. |
-| Shared ingress origin can read the generated token | Low | Token shown once, rotation endpoint, documented in README and on the page. `TestPageIngressOnly`. |
+| Shared ingress origin can read the generated token | Low | Token shown once, rotation endpoint, documented in README and on the page; every reveal and rotation is logged (without the token) so an unexpected one is visible. Residual: rotation also returns the new token, so a malicious ingress page opened by an admin could still obtain one; setting `auth_token` removes this. `TestPageIngressOnly`. |
 | No watchdog; halt on every exit | Low | `watchdog: http://[HOST]:[PORT:8120]/healthz`; exit code 2 (configuration error) stops the add-on, other exits restart after 5 s. CI checks exit code 2. |
 | Inaccurate DNS-rebinding claim; images not pinned by digest | Low | Text corrected above; Go and Home Assistant base images pinned by `@sha256`. |
 | Unbounded `page`; weak configured tokens | Low | `page` capped at 1000; tokens need ≥ 10 distinct characters and no short repeated pattern. `TestPageCapped`, `TestWeakTokensRejected`. |
+
+Re-check after the fixes (7e91b00 and later): no Critical or High findings; AppArmor confinement observed enforcing
+in CI (`mkdir /opt/evil: permission denied`).
 
 Not changed: the ghcr image publication (no `image:` in `config.yaml`, publishing gated by `PUBLISH_IMAGES`), as
 requested. Still open: Low 5 (Node 20 action pins) and Low 6 (go-qrcode), see the table above.

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -98,6 +99,8 @@ func NewPageHandler(cfg *Config, store *Store, wa PageController, auth *Authenti
 			http.Error(w, "cannot record that the token was shown", http.StatusInternalServerError)
 			return
 		}
+		// Audit trail (never the token): lets the owner spot a reveal they did not make.
+		slog.Warn("generated token revealed on the add-on page")
 		writeJSON(w, http.StatusOK, map[string]any{"token": cfg.AuthToken})
 	})
 	mux.HandleFunc("POST /api/token/rotate", func(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +121,7 @@ func NewPageHandler(cfg *Config, store *Store, wa PageController, auth *Authenti
 			http.Error(w, "cannot record that the token was shown", http.StatusInternalServerError)
 			return
 		}
+		slog.Warn("generated token rotated on the add-on page; MCP clients need the new token")
 		writeJSON(w, http.StatusOK, map[string]any{"token": tok})
 	})
 	mux.HandleFunc("POST /api/pair", func(w http.ResponseWriter, r *http.Request) {
