@@ -236,7 +236,11 @@ func (m *Manager) pair(ctx context.Context, client *whatsmeow.Client) bool {
 				BlackWhiteChar: qrterminal.BLACK_WHITE, WhiteBlackChar: qrterminal.WHITE_BLACK, QuietZone: 2,
 			})
 		case "success":
-			m.setState(StateConnecting)
+			if !(client.IsConnected() && client.IsLoggedIn()) {
+				m.setState(StateConnecting)
+			} else {
+				m.setState(StateConnected)
+			}
 			m.log.Info("linked to WhatsApp")
 			return true
 		case whatsmeow.QRChannelEventPasskeyRequest:
