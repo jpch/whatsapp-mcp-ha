@@ -24,6 +24,11 @@ Security hardening. **Read before updating** if you used the send tools in 0.1.0
   errors. Failed-login lines no longer include the client address.
 - Add-on page: shows the generated send token once (with rotation) and warns when sending is on but
   `allowed_recipients` is empty.
+- The send token while `enable_send` is off is refused with 403 and does not count as a failed login.
+- The pairing QR code is no longer written to the add-on log; scan it on the add-on page (plain Docker without a
+  page still prints it). Grouped phone numbers (`+351 900 000 000`) are masked too, and configuration errors no
+  longer repeat an `allowed_recipients` entry.
+- Fixed a data race between token rotation on the page and send requests.
 - Dependabot for Go modules and GitHub Actions.
 
 ## 0.1.0

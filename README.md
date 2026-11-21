@@ -22,7 +22,7 @@ Independent project, not affiliated with WhatsApp or Meta. The tool set and mess
    Sending is off by default; see [Sending](#sending).
 4. **Start** the add-on and open **Open Web UI** (or the sidebar entry **WhatsApp MCP**, administrators only).
 5. On your phone: **WhatsApp → Settings → Linked devices → Link a device**, and scan the QR code shown on the page.
-   The same QR code is printed in the add-on **Log**. The page shows **Connected** when done.
+   The page shows **Connected** when done. In the add-on the QR code is only on the page, never in the log.
 
 A watchdog restarts the add-on if the endpoint stops answering. An invalid configuration stops the add-on with
 the error in the log instead of restarting it.
@@ -99,7 +99,8 @@ voice notes must already be Ogg Opus (no ffmpeg in the image); passkey pairing i
 1. Set `enable_send: true`.
 2. Set `allowed_recipients`, e.g. `+351900000000` or `120363000000000000@g.us`. Empty refuses every send.
 3. Set `send_token` (32+ random characters, different from `auth_token`), or leave it empty and copy the generated
-   one from the add-on page (shown once; **Generate a new send token** replaces it).
+   one from the add-on page (shown once; **Generate a new send token** replaces it). A `send_token` set in the
+   configuration is never shown or replaced from the page, which is the safer choice.
 4. Give the send token **only** to the one client that should send. Never put it into a shared or portal client;
    those keep using `auth_token`, which never sees the send tools.
 
@@ -119,7 +120,7 @@ docker run -d --name whatsapp-mcp --restart unless-stopped \
   -v "$PWD/data:/data" -v "$PWD/media:/share/whatsapp-mcp" \
   -e WA_MCP_TOKEN="<32+ random characters>" \
   whatsapp-mcp
-docker logs -f whatsapp-mcp   # scan the QR code printed here
+docker logs -f whatsapp-mcp   # no pairing page in plain Docker: scan the QR code printed here
 ```
 
 Use `aarch64-base` on ARM. Without `WA_MCP_TOKEN` a token is generated into `data/auth_token`. Other variables:

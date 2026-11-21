@@ -88,28 +88,26 @@ func NewPageHandler(cfg *Config, store *Store, wa PageController, auth *Authenti
 	type tokenSlot struct {
 		route, option, shownFile, label string
 		generated                       func() bool
-		get                             func() string
+		current                         string // guarded by tokMu; cfg token fields are never written after startup
 		rotate                          func() (string, error)
 	}
-	slots := []tokenSlot{
+	slots := []*tokenSlot{
 		{route: "/api/token", option: "auth_token", shownFile: tokenShownFile, label: "generated token",
 			generated: func() bool { return cfg.TokenGenerated },
-			get:       func() string { return cfg.AuthToken },
+			current:   cfg.AuthToken,
 			rotate: func() (string, error) {
 				tok, err := GenerateToken(cfg.DataDir)
 				if err == nil {
-					cfg.AuthToken = tok
 					auth.SetToken(tok)
 				}
 				return tok, err
 			}},
 		{route: "/api/send_token", option: "send_token", shownFile: sendTokenShownFile, label: "generated send token",
 			generated: func() bool { return cfg.SendTokenGenerated && cfg.SendActive() },
-			get:       func() string { return cfg.SendToken },
+			current:   cfg.SendToken,
 			rotate: func() (string, error) {
 				tok, err := GenerateSendToken(cfg.DataDir)
 				if err == nil {
-					cfg.SendToken = tok
 					auth.SetSendToken(tok)
 				}
 				return tok, err
@@ -134,7 +132,7 @@ func NewPageHandler(cfg *Config, store *Store, wa PageController, auth *Authenti
 			}
 			// Audit trail (never the token): lets the owner spot a reveal they did not make.
 			slog.Warn(sl.label + " revealed on the add-on page")
-			writeJSON(w, http.StatusOK, map[string]any{"token": sl.get()})
+			writeJSON(w, http.StatusOK, map[string]any{"token": sl.current})
 		})
 		mux.HandleFunc("POST "+sl.route+"/rotate", func(w http.ResponseWriter, r *http.Request) {
 			tokMu.Lock()
@@ -148,6 +146,7 @@ func NewPageHandler(cfg *Config, store *Store, wa PageController, auth *Authenti
 				http.Error(w, "cannot generate a token", http.StatusInternalServerError)
 				return
 			}
+			sl.current = tok
 			if err := os.WriteFile(shown, nil, 0o600); err != nil {
 				http.Error(w, "cannot record that the token was shown", http.StatusInternalServerError)
 				return

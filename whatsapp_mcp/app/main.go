@@ -24,7 +24,11 @@ const exitConfigError = 2
 type configError struct{ error }
 
 func main() {
-	if err := run(); err != nil {
+	// The masking handler is installed before the configuration is read, so even a configuration error
+	// cannot print someone's phone number. The level is set once the configuration is known.
+	level := new(slog.LevelVar)
+	slog.SetDefault(slog.New(newRedactingHandler(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))))
+	if err := run(level); err != nil {
 		slog.Error("fatal", "error", err)
 		var ce configError
 		if errors.As(err, &ce) {
@@ -34,14 +38,14 @@ func main() {
 	}
 }
 
-func run() error {
+func run(level *slog.LevelVar) error {
 	cfg, err := LoadConfig("/data/options.json", os.Getenv)
 	if err != nil {
 		return configError{err}
 	}
 	// Every line goes through the redacting handler: other people's JIDs and phone numbers are masked.
-	log := slog.New(newRedactingHandler(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})))
-	slog.SetDefault(log)
+	level.Set(cfg.LogLevel)
+	log := slog.Default()
 
 	// Session keys, messages and the generated token: owner-only files.
 	syscall.Umask(0o077)
@@ -104,6 +108,7 @@ func run() error {
 		auth.SetSendToken(cfg.SendToken)
 		sendServer = NewMCPServer(tools, true)
 	}
+	auth.SetInactiveSendToken(cfg.InactiveSendToken)
 	servers := []*http.Server{newHTTPServer(cfg.Listen, NewMCPHandler(NewMCPServer(tools, false), sendServer, auth))}
 	if cfg.PageListen != "" {
 		servers = append(servers, newHTTPServer(cfg.PageListen, NewPageHandler(cfg, store, mgr, auth)))

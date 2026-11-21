@@ -36,10 +36,19 @@ type env struct {
 }
 
 func newEnv(t *testing.T, mutate func(*Config)) *env {
+	e, _ := newEnvAuth(t, mutate)
+	return e
+}
+
+// newEnvAuth also returns the authenticator, for tests that rotate tokens.
+func newEnvAuth(t *testing.T, mutate func(*Config)) (*env, *Authenticator) {
 	t.Helper()
 	cfg := testConfig(t)
 	if mutate != nil {
 		mutate(cfg)
+	}
+	if err := cfg.EnsureSendToken(); err != nil {
+		t.Fatal(err)
 	}
 	os.MkdirAll(cfg.OutboxDir(), 0o755)
 	wa := &fakeWA{status: Status{State: StateConnected, Paired: true, Connected: true}, contacts: map[string]string{"333333333@s.whatsapp.net": "Bob Builder"}}
@@ -52,9 +61,10 @@ func newEnv(t *testing.T, mutate func(*Config)) *env {
 		auth.SetSendToken(cfg.SendToken)
 		sendServer = NewMCPServer(tools, true)
 	}
+	auth.SetInactiveSendToken(cfg.InactiveSendToken)
 	srv := httptest.NewServer(NewMCPHandler(NewMCPServer(tools, false), sendServer, auth))
 	t.Cleanup(srv.Close)
-	return &env{cfg: cfg, wa: wa, store: store, srv: srv}
+	return &env{cfg: cfg, wa: wa, store: store, srv: srv}, auth
 }
 
 func (e *env) session(t *testing.T, token string) (*mcp.ClientSession, error) {

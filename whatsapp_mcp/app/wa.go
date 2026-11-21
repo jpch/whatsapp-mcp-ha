@@ -230,7 +230,15 @@ func (m *Manager) pair(ctx context.Context, client *whatsmeow.Client) bool {
 			m.mu.Lock()
 			m.state, m.qr = StateWaitingForQR, item.Code
 			m.mu.Unlock()
-			m.log.Info("not linked: scan this QR code in WhatsApp > Settings > Linked devices > Link a device (also shown on the add-on page)",
+			if m.cfg.PageListen != "" {
+				// The pairing code links a device to the account: it stays on the admin-only add-on page and
+				// is never written to the log, which can end up in support bundles and backups.
+				m.log.Info("not linked: open the add-on page (Open Web UI) and scan the QR code in WhatsApp > Settings > Linked devices > Link a device",
+					"valid_for", item.Timeout.String())
+				continue
+			}
+			// No pairing page (plain Docker): the log is the only place to show the code.
+			m.log.Info("not linked: scan this QR code in WhatsApp > Settings > Linked devices > Link a device",
 				"valid_for", item.Timeout.String())
 			qrterminal.GenerateWithConfig(item.Code, qrterminal.Config{
 				Level: qrterminal.L, Writer: m.qrOut, HalfBlocks: true,

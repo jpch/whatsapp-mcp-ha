@@ -16,10 +16,26 @@ var (
 	jidRe = regexp.MustCompile(`[0-9][0-9-]{4,}(?:[.:][0-9]+)*@[a-z.]+`)
 	// Bare phone numbers: 8 or more digits, optionally with a leading +.
 	phoneLikeRe = regexp.MustCompile(`\+?[0-9]{8,}`)
+	// Grouped phone numbers: digit groups separated by spaces or dashes (not dots, so IP addresses stay), e.g. "+351 900 000 000",
+	// "351-900-000-000", "(351) 900 000 000". Masked when they hold 9 or more digits, so ISO dates
+	// (8 digits) and times (colons) stay readable.
+	groupedPhoneRe = regexp.MustCompile(`\+?\(?[0-9]{1,4}\)?(?:[ \-]\(?[0-9]{1,5}\)?){2,6}`)
 )
 
 func redactText(s string) string {
 	s = jidRe.ReplaceAllString(s, "[jid]")
+	s = groupedPhoneRe.ReplaceAllStringFunc(s, func(m string) string {
+		digits := 0
+		for _, r := range m {
+			if r >= '0' && r <= '9' {
+				digits++
+			}
+		}
+		if digits >= 9 {
+			return "[number]"
+		}
+		return m
+	})
 	return phoneLikeRe.ReplaceAllString(s, "[number]")
 }
 

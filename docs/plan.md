@@ -22,21 +22,24 @@ than locking it down. whatsmeow is pinned to a recent commit (`go.mod`) and is u
 
 ## Design
 
-- `wa.go`: whatsmeow client; pairing through the QR channel (codes printed in the log and kept in memory for the
-  page); re-pairing after `LoggedOut` or an unlink from the page; stores live messages and history sync into
+- `wa.go`: whatsmeow client; pairing through the QR channel (codes kept in memory for the
+  page, printed in the log only when there is no page, i.e. plain Docker); re-pairing after `LoggedOut` or an unlink from the page; stores live messages and history sync into
   `messages.db`; LID senders mapped to phone-number JIDs when known; sends and media download.
 - `store.go`: SQLite message store (`/data/messages.db`), parameterised queries, LIKE wildcards escaped.
-- `tools.go`: MCP tools. Send tools only registered when `enable_send`; `download_media` only when
-  `allow_media_download`. Recipient validation (phone digits or user/LID/group JID; no broadcast, status or
+- `tools.go`: MCP tools. Two tool sets chosen per request by token: the read-only token (`auth_token`) gets the
+  read tools; the send token (`send_token`) gets read and send tools, and only when `enable_send` is on (off by
+  default). A send call without the send token is a tool error. Sends only to `allowed_recipients` (empty refuses
+  every send). `download_media` only when `allow_media_download`. Recipient validation (phone digits or user/LID/group JID; no broadcast, status or
   newsletter). Send limiter (per minute token bucket, rolling 24 h cap).
 - `media.go`: outbox reads through `os.Root` (no escape via `..` or symlinks), size caps, content sniffing,
   bounds-checked Ogg Opus parser.
-- `http.go`: exposed port 8120: `/mcp` (bearer token, SHA-256 + constant-time compare, failed attempts throttled
+- `http.go`: exposed port 8120: `/mcp` (bearer tokens with roles, SHA-256 + constant-time compare, failed attempts throttled
   per client, 1 MiB body cap, cross-origin protection) and `GET /healthz`; everything else 404.
-- `page.go`: ingress port 8121: status, QR PNG, generated token (POST), new QR, unlink. Only the ingress proxy
+- `page.go`: ingress port 8121: status, QR PNG, generated read and send tokens (POST, shown once, rotation), new QR, unlink. Only the ingress proxy
   address `172.30.32.2` may connect; POSTs need `X-Requested-With`; strict CSP, no inline script.
-- `config.go`: `/data/options.json` or `WA_MCP_*` env; token required: configured (≥ 32 chars) or generated
-  into `/data/auth_token` (0600) and only shown on the admin-only page; never logged.
+- `config.go`: `/data/options.json` or `WA_MCP_*` env; read token required: configured (≥ 32 chars) or generated
+  into `/data/auth_token` (0600); send token likewise (`/data/send_token`, only when sending is on, must differ);
+  generated tokens only shown on the admin-only page; never logged.
 
 ## Threat model (summary)
 

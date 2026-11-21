@@ -26,6 +26,9 @@ const (
 	RoleNone Role = iota
 	RoleRead      // auth_token: read tools only
 	RoleSend      // send_token: read and send tools
+	// RoleSendInactive is a send token while enable_send is off: refused with 403, but not counted as a
+	// failed login (callers behind one tunnel share a failure key).
+	RoleSendInactive
 )
 
 // Authenticator checks bearer tokens in constant time and slows down repeated failures.
@@ -33,6 +36,7 @@ const (
 type Authenticator struct {
 	want     atomic.Pointer[[32]byte]
 	wantSend atomic.Pointer[[32]byte] // nil when sending is not active
+	inactive atomic.Pointer[[32]byte] // send token while enable_send is off; nil if none
 	log      *slog.Logger
 
 	mu         sync.Mutex
@@ -70,6 +74,16 @@ func (a *Authenticator) SetSendToken(token string) {
 	a.wantSend.Store(&h)
 }
 
+// SetInactiveSendToken records a send token that exists while sending is off. Empty clears it.
+func (a *Authenticator) SetInactiveSendToken(token string) {
+	if token == "" {
+		a.inactive.Store(nil)
+		return
+	}
+	h := sha256.Sum256([]byte(token))
+	a.inactive.Store(&h)
+}
+
 // Role returns what the Authorization header ("Bearer <token>") allows. Both tokens are always
 // compared, in constant time, so the timing does not tell which one matched.
 func (a *Authenticator) Role(header string) Role {
@@ -81,13 +95,16 @@ func (a *Authenticator) Role(header string) Role {
 	got := sha256.Sum256([]byte(tok))
 	want := a.want.Load()
 	read := subtle.ConstantTimeCompare(got[:], want[:]) == 1
-	send := false
-	if ws := a.wantSend.Load(); ws != nil {
-		send = subtle.ConstantTimeCompare(got[:], ws[:]) == 1
-	} else {
-		var zero [32]byte
-		subtle.ConstantTimeCompare(got[:], zero[:])
+	match := func(p *[32]byte) bool {
+		if p == nil {
+			var zero [32]byte
+			subtle.ConstantTimeCompare(got[:], zero[:])
+			return false
+		}
+		return subtle.ConstantTimeCompare(got[:], p[:]) == 1
 	}
+	send := match(a.wantSend.Load())
+	inactive := match(a.inactive.Load())
 	switch {
 	case tok == "":
 		return RoleNone
@@ -95,12 +112,17 @@ func (a *Authenticator) Role(header string) Role {
 		return RoleSend
 	case read:
 		return RoleRead
+	case inactive:
+		return RoleSendInactive
 	}
 	return RoleNone
 }
 
 // Check returns true if the Authorization header carries a valid token.
-func (a *Authenticator) Check(header string) bool { return a.Role(header) != RoleNone }
+func (a *Authenticator) Check(header string) bool {
+	r := a.Role(header)
+	return r == RoleRead || r == RoleSend
+}
 
 // clientKey identifies the caller for failure limiting. Behind Cloudflare every request comes from
 // the tunnel connector, so the CF-Connecting-IP header is part of the key. It can be forged, which
@@ -175,7 +197,12 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			http.Error(w, "too many failed authentication attempts", http.StatusTooManyRequests)
 			return
 		}
-		if !a.Check(r.Header.Get("Authorization")) {
+		role := a.Role(r.Header.Get("Authorization"))
+		if role == RoleSendInactive {
+			http.Error(w, "the send token is not accepted while enable_send is off", http.StatusForbidden)
+			return
+		}
+		if role != RoleRead && role != RoleSend {
 			a.recordFailure(key)
 			a.logFailure()
 			w.Header().Set("WWW-Authenticate", `Bearer realm="whatsapp-mcp"`)
