@@ -66,6 +66,9 @@ type Manager struct {
 
 	pairReq   chan struct{}
 	loggedOut chan struct{}
+
+	groupMu    sync.Mutex
+	groupTried map[string]time.Time // group name lookups, at most one per group per hour
 }
 
 func NewManager(ctx context.Context, cfg *Config, store *Store, log *slog.Logger) (*Manager, error) {
@@ -75,7 +78,7 @@ func NewManager(ctx context.Context, cfg *Config, store *Store, log *slog.Logger
 	}
 	dbLog := newWALogger(log.With("module", "whatsmeow-db"), waMin)
 	path := filepath.Join(cfg.DataDir, "whatsmeow.db")
-	container, err := sqlstore.New(ctx, "sqlite3", "file:"+path+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000", dbLog)
+	container, err := sqlstore.New(ctx, "sqlite3", "file:"+path+"?_foreign_keys=on&_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000", dbLog)
 	if err != nil {
 		return nil, fmt.Errorf("open session store: %w", err)
 	}
@@ -83,6 +86,7 @@ func NewManager(ctx context.Context, cfg *Config, store *Store, log *slog.Logger
 	return &Manager{
 		cfg: cfg, store: store, log: log, container: container, qrOut: os.Stdout,
 		state: StateStarting, pairReq: make(chan struct{}, 1), loggedOut: make(chan struct{}, 1),
+		groupTried: map[string]time.Time{},
 	}, nil
 }
 
@@ -165,7 +169,9 @@ func (m *Manager) Run(ctx context.Context) {
 			continue
 		}
 		client := whatsmeow.NewClient(device, newWALogger(m.log.With("module", "whatsmeow"), waMin))
-		client.AddEventHandler(m.handleEvent)
+		client.AddEventHandler(func(evt any) { m.handleEvent(client, evt) })
+		// A logout signal from a previous client must not end this one.
+		drain(m.loggedOut)
 		m.mu.Lock()
 		m.client = client
 		m.mu.Unlock()
@@ -197,17 +203,14 @@ func (m *Manager) Run(ctx context.Context) {
 			client.Disconnect()
 			m.setState(StateLoggedOut)
 			m.log.Warn("this device was unlinked from WhatsApp; showing a new pairing QR code")
-			// Drain a pending pairing request so a stale click does not skip a round.
-			select {
-			case <-m.pairReq:
-			default:
-			}
 		}
 	}
 }
 
 // pair runs one QR pairing round. It returns true when the phone linked this device.
 func (m *Manager) pair(ctx context.Context, client *whatsmeow.Client) bool {
+	// A request made before this round (e.g. a stale click) must not skip the next wait.
+	drain(m.pairReq)
 	qrCh, err := client.GetQRChannel(ctx)
 	if err != nil {
 		m.log.Error("cannot start pairing", "error", err)
@@ -256,8 +259,15 @@ func (m *Manager) pair(ctx context.Context, client *whatsmeow.Client) bool {
 	return false
 }
 
-func (m *Manager) handleEvent(evt any) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+func (m *Manager) handleEvent(client *whatsmeow.Client, evt any) {
+	if client != m.getClient() {
+		return // event from a replaced client
+	}
+	timeout := 2 * time.Minute
+	if _, ok := evt.(*events.HistorySync); ok {
+		timeout = 30 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	switch e := evt.(type) {
 	case *events.Message:
@@ -357,7 +367,7 @@ func (m *Manager) storeMessage(ctx context.Context, e *events.Message) bool {
 		if name == "" && !e.Info.IsFromMe && e.Info.PushName != "" {
 			name = e.Info.PushName
 		}
-	} else if m.store.ChatName(ctx, chat.String()) == "" {
+	} else if m.store.ChatName(ctx, chat.String()) == "" && m.shouldLookUpGroup(chat.String()) {
 		if c := m.getClient(); c != nil && e.SourceWebMsg == nil {
 			gctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			if gi, err := c.GetGroupInfo(gctx, e.Info.Chat); err == nil {
@@ -375,6 +385,26 @@ func (m *Manager) storeMessage(ctx context.Context, e *events.Message) bool {
 		return false
 	}
 	return true
+}
+
+func (m *Manager) shouldLookUpGroup(jid string) bool {
+	m.groupMu.Lock()
+	defer m.groupMu.Unlock()
+	if t, ok := m.groupTried[jid]; ok && time.Since(t) < time.Hour {
+		return false
+	}
+	if len(m.groupTried) > 5000 {
+		m.groupTried = map[string]time.Time{}
+	}
+	m.groupTried[jid] = time.Now()
+	return true
+}
+
+func drain(ch chan struct{}) {
+	select {
+	case <-ch:
+	default:
+	}
 }
 
 type mediaFields interface {

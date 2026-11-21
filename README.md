@@ -68,6 +68,9 @@ Do not forward the port on your router.
 Only messages received while the add-on runs, plus what WhatsApp sends in the history sync after pairing, are
 searchable.
 
+Limitations in 0.1.0: edits, deletions ("deleted for everyone") and reactions are not applied to stored messages;
+voice notes must already be Ogg Opus (no ffmpeg in the image); passkey pairing is not supported (use the QR code).
+
 ## Configuration
 
 | Option | Default | |

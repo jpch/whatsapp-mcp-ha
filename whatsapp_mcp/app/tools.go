@@ -447,6 +447,9 @@ func (t *Tools) download(ctx context.Context, in DownloadIn) (*mcp.CallToolResul
 	if err := os.MkdirAll(t.cfg.DownloadDir(), 0o750); err != nil {
 		return nil, DownloadOut{}, err
 	}
+	if err := RequireRealDir(t.cfg.DownloadDir()); err != nil {
+		return nil, DownloadOut{}, err
+	}
 	// os.Root keeps every write inside the downloads folder, even if a symlink was planted there.
 	root, err := os.OpenRoot(t.cfg.DownloadDir())
 	if err != nil {

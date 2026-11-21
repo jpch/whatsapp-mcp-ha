@@ -81,7 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender);
 
 // OpenStore opens (and creates) the message database at path.
 func OpenStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite3", "file:"+path+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000")
+	db, err := sql.Open("sqlite3", "file:"+path+"?_foreign_keys=on&_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, err
 	}

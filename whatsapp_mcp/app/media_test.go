@@ -79,3 +79,12 @@ func TestSafeFileName(t *testing.T) {
 		}
 	}
 }
+
+func TestSymlinkedOutboxRefused(t *testing.T) {
+	base := t.TempDir()
+	os.WriteFile(filepath.Join(base, "secret.db"), []byte("keys"), 0o600)
+	os.Symlink(base, filepath.Join(base, "outbox"))
+	if _, err := ReadOutboxFile(filepath.Join(base, "outbox"), "secret.db", 1<<20); err == nil {
+		t.Fatal("symlinked outbox accepted")
+	}
+}

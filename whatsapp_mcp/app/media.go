@@ -42,6 +42,9 @@ func ReadOutboxFile(outbox, mediaPath string, maxBytes int64) (*OutboxFile, erro
 	if err != nil {
 		return nil, err
 	}
+	if err := RequireRealDir(outbox); err != nil {
+		return nil, err
+	}
 	root, err := os.OpenRoot(outbox)
 	if err != nil {
 		return nil, fmt.Errorf("outbox folder is not available: %w", err)
@@ -77,6 +80,24 @@ func ReadOutboxFile(outbox, mediaPath string, maxBytes int64) (*OutboxFile, erro
 	}
 	mime, kind := detectMedia(path.Base(rel), data)
 	return &OutboxFile{Name: path.Base(rel), Data: data, Mime: mime, Kind: kind}, nil
+}
+
+// RequireRealDir refuses a media folder that is (or sits under) a symlink: os.Root confines paths
+// below its root, but follows a symlinked root itself, which another add-on with /share access could plant.
+func RequireRealDir(dir string) error {
+	clean := filepath.Clean(dir)
+	real, err := filepath.EvalSymlinks(clean)
+	if err != nil {
+		return fmt.Errorf("media folder is not available: %w", err)
+	}
+	if real != clean {
+		return fmt.Errorf("media folder %s must not be a symlink", clean)
+	}
+	st, err := os.Lstat(clean)
+	if err != nil || !st.IsDir() {
+		return fmt.Errorf("media folder %s is not a directory", clean)
+	}
+	return nil
 }
 
 func outboxRelative(outbox, mediaPath string) (string, error) {
