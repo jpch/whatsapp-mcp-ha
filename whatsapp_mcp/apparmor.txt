@@ -1,0 +1,51 @@
+#include <tunables/global>
+
+# Home Assistant replaces the profile name with the full add-on slug.
+profile whatsapp_mcp flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # s6-overlay (init, service scripts)
+  file,
+  signal (send) set=(kill,term,int,hup,cont),
+  /init ix,
+  /bin/** ix,
+  /usr/bin/** ix,
+  /run/{s6,s6-rc*,service}/** ix,
+  /package/** ix,
+  /command/** ix,
+  /etc/services.d/** rwix,
+  /etc/cont-init.d/** rwix,
+  /etc/cont-finish.d/** rwix,
+  /run/{,**} rwk,
+  /dev/tty rw,
+  /tmp/** rwk,
+  /data/** rw,
+
+  # The server runs in its own profile that may only write to /data and /share/whatsapp-mcp.
+  /usr/bin/whatsapp-mcp cx -> whatsapp_mcp_server,
+
+  profile whatsapp_mcp_server flags=(attach_disconnected,mediate_deleted) {
+    #include <abstractions/base>
+
+    signal,
+    network inet stream,
+    network inet6 stream,
+    network inet dgram,
+    network inet6 dgram,
+    network netlink raw,
+    capability dac_override,
+
+    # Read anywhere in the container (CA certificates, resolver, /proc and /sys for the Go runtime).
+    / r,
+    /** r,
+    /usr/bin/whatsapp-mcp mr,
+
+    # Writes: session, messages and token; outbox and downloads; SQLite temporary files.
+    /data/ rw,
+    /data/** rwk,
+    /share/whatsapp-mcp/ rw,
+    /share/whatsapp-mcp/** rwk,
+    /tmp/** rwk,
+    /var/tmp/** rwk,
+  }
+}

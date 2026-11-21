@@ -1,0 +1,30 @@
+configuration:
+  auth_token:
+    name: Bearer token
+    description: "Token MCP clients send as 'Authorization: Bearer <token>'. At least 32 printable characters without spaces. Leave empty to use a generated token, shown once on the add-on page."
+  enable_send:
+    name: Enable send tools
+    description: "On (default): send_message, send_file and send_audio_message are available. Off: the server is read-only and those tools are not listed."
+  send_rate_per_minute:
+    name: Sends per minute
+    description: Maximum messages sent per minute, across all clients.
+  send_daily_limit:
+    name: Sends per 24 hours
+    description: Maximum messages sent in any 24-hour window, across all clients.
+  allowed_recipients:
+    name: Allowed recipients
+    description: "Phone numbers with country code (digits) or JIDs (…@s.whatsapp.net, …@lid, groups …@g.us) the send tools may write to. Empty = anyone. Recommended: list the chats agents should use, because incoming messages can try to trick an agent into sending."
+  allow_media_download:
+    name: Allow media download
+    description: "Off (default): download_media is not available. On: it saves received media into /share/whatsapp-mcp/downloads."
+  max_media_mb:
+    name: Maximum media size (MB)
+    description: Largest file that can be sent from the outbox or downloaded.
+  retention_days:
+    name: Message retention (days)
+    description: Delete stored messages older than this many days (checked every 6 hours). 0 keeps everything.
+  log_level:
+    name: Log level
+    description: Message contents and tokens are never logged at any level.
+network:
+  8120/tcp: MCP endpoint (/mcp, bearer token required). Leave empty unless LAN clients need it.

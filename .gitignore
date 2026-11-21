@@ -4,3 +4,4 @@
 *.log
 .env
 /data/
+/whatsapp_mcp/app/whatsapp-mcp-ha
