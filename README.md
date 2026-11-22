@@ -64,11 +64,21 @@ bearer token decides what the caller may do. Keep both if you expose the hostnam
 ### `cloudflare_jwt`
 
 The add-on accepts only a Cloudflare Access JWT for the application identified by `cf_access_aud`, signed by
-`https://<cf_team_domain>/cdn-cgi/access/certs` (RS256). It reads `Cf-Access-Jwt-Assertion` (and, if that header
-is absent, the `CF_Authorization` cookie). Bearer tokens are ignored. Create an Access application on the public
-hostname whose origin is this add-on. Non-browser MCP clients use a [service token](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/):
+`https://<cf_team_domain>/cdn-cgi/access/certs` (RS256). It reads, in order:
+
+1. `Cf-Access-Jwt-Assertion`, which Cloudflare adds when this add-on is the Access application. An MCP portal
+   with Managed OAuth does this too: the client holds an opaque token, and Access puts the JWT on the request
+   the origin sees.
+2. `Cf-Access-Token`, the same JWT when a portal or another MCP server forwards it.
+3. The `CF_Authorization` cookie.
+4. `Authorization: Bearer`, only when that value is itself this Access JWT. Any other bearer, including
+   `auth_token`, is rejected.
+
+Set `cf_access_aud` to the AUD of the application that issued the JWT (this add-on, or the portal application
+if that is the token being forwarded). Non-browser clients in front of Access use a
+[service token](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/):
 the client sends `CF-Access-Client-Id` and `CF-Access-Client-Secret` to Cloudflare, and Cloudflare puts the JWT on
-the request the add-on sees.
+the request the add-on sees. Those two secrets are not checked here.
 
 ```json
 { "mcpServers": { "whatsapp": { "type": "http", "url": "https://<your-hostname>/mcp",

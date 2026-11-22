@@ -106,8 +106,24 @@ func TestCloudflareJWTAcceptsHeaderAndCookie(t *testing.T) {
 	if accessJWT(h) != tok {
 		t.Fatal("cookie not read")
 	}
-	// The header wins over the cookie, and a query string is not a source.
+	h.Del("Cookie")
+	h.Set("Cf-Access-Token", tok)
+	if accessJWT(h) != tok {
+		t.Fatal("forwarded portal header not read")
+	}
+	h.Del("Cf-Access-Token")
+	h.Set("Authorization", "Bearer "+tok)
+	if accessJWT(h) != tok {
+		t.Fatal("bearer jwt not read")
+	}
+	h.Set("Authorization", "Bearer not-a-jwt")
+	if accessJWT(h) != "" {
+		t.Fatal("non-jwt bearer was accepted as a source")
+	}
+	// The origin header wins over the portal header, the cookie and a bearer.
 	h.Set("Cf-Access-Jwt-Assertion", "header-token")
+	h.Set("Cf-Access-Token", "portal-token")
+	h.Set("Cookie", "CF_Authorization="+tok)
 	if accessJWT(h) != "header-token" {
 		t.Fatal("header should win")
 	}

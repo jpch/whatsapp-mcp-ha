@@ -182,6 +182,34 @@ func TestAuthMethodNoneAndCloudflareJWT(t *testing.T) {
 	if w.Code != 204 {
 		t.Fatalf("valid jwt: %d", w.Code)
 	}
+	req = httptest.NewRequest("POST", "/mcp", nil)
+	req.RemoteAddr = "10.0.0.9:9"
+	req.Header.Set("Cf-Access-Token", tok)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 204 {
+		t.Fatalf("portal Cf-Access-Token: %d", w.Code)
+	}
+	req = httptest.NewRequest("POST", "/mcp", nil)
+	req.RemoteAddr = "10.0.0.10:9"
+	req.Header.Set("Authorization", "Bearer "+tok)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 204 {
+		t.Fatalf("bearer access jwt: %d", w.Code)
+	}
+	req = httptest.NewRequest("POST", "/mcp", nil)
+	req.RemoteAddr = "10.0.0.11:9"
+	req.Header.Set("Authorization", "Bearer not-the-access-jwt")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 401 {
+		t.Fatalf("non-jwt bearer: %d", w.Code)
+	}
+	if cf.RoleFrom(req.Header) != RoleNone {
+		t.Fatal("non-jwt bearer should not authenticate")
+	}
+	req.Header.Set("Cf-Access-Jwt-Assertion", tok)
 	if cf.RoleFrom(req.Header) != RoleRead {
 		t.Fatal("jwt without send should be read-only")
 	}

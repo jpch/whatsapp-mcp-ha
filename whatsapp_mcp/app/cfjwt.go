@@ -18,7 +18,9 @@ import (
 
 // Cloudflare Access puts a signed JWT on requests that passed an Access application:
 // the Cf-Access-Jwt-Assertion header, and for browsers also the CF_Authorization cookie.
-// The signature is checked against the team JWKS at https://<team>.cloudflareaccess.com/cdn-cgi/access/certs.
+// An MCP portal, or another server forwarding that same JWT, sends it as Cf-Access-Token
+// or as Authorization: Bearer. The signature is checked against the team JWKS at
+// https://<team>.cloudflareaccess.com/cdn-cgi/access/certs.
 // See https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/
 
 const (
@@ -328,8 +330,11 @@ func rsaPublicKey(nB64, eB64 string) (*rsa.PublicKey, error) {
 	return &rsa.PublicKey{N: new(big.Int).SetBytes(nb), E: e}, nil
 }
 
-// accessJWT returns the Access JWT from the header Cloudflare adds, or the browser cookie.
-// The header wins when both are present. Query parameters are never accepted.
+// accessJWT returns the Access JWT. The header Cloudflare adds at the origin wins, then the
+// forwarded header an MCP portal uses, then the browser cookie, then Authorization: Bearer
+// when the value has the shape of a JWT. A bearer that is not a JWT is ignored here; Verify
+// still rejects a JWT that was not signed for this team and application. Query parameters
+// are never accepted.
 func accessJWT(h http.Header) string {
 	if h == nil {
 		return ""
@@ -337,9 +342,27 @@ func accessJWT(h http.Header) string {
 	if v := strings.TrimSpace(h.Get("Cf-Access-Jwt-Assertion")); v != "" {
 		return v
 	}
-	c, err := (&http.Request{Header: h}).Cookie("CF_Authorization")
-	if err != nil {
+	if v := strings.TrimSpace(h.Get("Cf-Access-Token")); v != "" {
+		return v
+	}
+	if c, err := (&http.Request{Header: h}).Cookie("CF_Authorization"); err == nil {
+		if v := strings.TrimSpace(c.Value); v != "" {
+			return v
+		}
+	}
+	return bearerJWT(h.Get("Authorization"))
+}
+
+// bearerJWT returns the token from "Bearer <jwt>" only when it looks like a JWT.
+// Anything else, including an api_key, is not an Access token.
+func bearerJWT(header string) string {
+	const prefix = "bearer "
+	if len(header) < len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
 		return ""
 	}
-	return strings.TrimSpace(c.Value)
+	tok := strings.TrimSpace(header[len(prefix):])
+	if tok == "" || strings.Count(tok, ".") != 2 || strings.ContainsAny(tok, " \t") {
+		return ""
+	}
+	return tok
 }

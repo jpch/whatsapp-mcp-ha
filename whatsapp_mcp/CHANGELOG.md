@@ -4,7 +4,7 @@
 
 - **Authentication method.** `auth_method` chooses how `/mcp` authenticates callers:
   - `api_key` (default, unchanged): `auth_token` for the read tools and `send_token` for the send tools.
-  - `cloudflare_jwt`: a Cloudflare Access application JWT (`Cf-Access-Jwt-Assertion`, or the `CF_Authorization` cookie). Requires `cf_team_domain` and `cf_access_aud`. Bearer tokens are ignored. Signing keys are loaded only from `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs` (RS256). With `enable_send` on, every identity the Access policy allows can send.
+  - `cloudflare_jwt`: a Cloudflare Access application JWT. Accepted from `Cf-Access-Jwt-Assertion`, from `Cf-Access-Token` (an MCP portal or another server forwarding that JWT), from the `CF_Authorization` cookie, or from `Authorization: Bearer` when the bearer value is that same JWT. Any other bearer is rejected. Requires `cf_team_domain` and `cf_access_aud`. Signing keys are loaded only from `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs` (RS256). With `enable_send` on, every identity the Access policy allows can send.
   - `none`: no authentication. Not recommended. The add-on logs a warning on every start. With `enable_send` on, every caller can send.
 - Existing configurations without `auth_method` stay on `api_key`.
 

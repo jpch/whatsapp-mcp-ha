@@ -15,11 +15,11 @@ import (
 	"strings"
 )
 
-// Authentication methods. api_key is the default and the only one that uses bearer tokens.
+// Authentication methods. api_key is the default and the only one that uses the add-on bearer tokens.
 const (
 	AuthMethodAPIKey        = "api_key"        // auth_token (read) and send_token (send)
 	AuthMethodNone          = "none"           // no authentication; not recommended
-	AuthMethodCloudflareJWT = "cloudflare_jwt" // Cloudflare Access JWT; bearer tokens are ignored
+	AuthMethodCloudflareJWT = "cloudflare_jwt" // Cloudflare Access JWT, including one forwarded by an MCP portal
 )
 
 // MinTokenLength is the minimum length of a user-provided bearer token.

@@ -143,7 +143,8 @@ func (a *Authenticator) Role(header string) Role {
 }
 
 // RoleFrom is Role for an HTTP request. api_key reads Authorization. none accepts everyone.
-// cloudflare_jwt reads Cf-Access-Jwt-Assertion, then the CF_Authorization cookie.
+// cloudflare_jwt reads the Access JWT from Cf-Access-Jwt-Assertion, Cf-Access-Token (MCP portal),
+// the CF_Authorization cookie, or Authorization: Bearer when that value is the Access JWT.
 func (a *Authenticator) RoleFrom(h http.Header) Role {
 	switch a.mode {
 	case authModeNone:
