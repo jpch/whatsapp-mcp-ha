@@ -27,8 +27,22 @@ async function refresh() {
     $("newqr").classList.toggle("hidden", !(wa.state === "pairing_timeout" || wa.state === "logged_out"));
     $("unlink").classList.toggle("hidden", !wa.paired);
     $("url").textContent = s.internal_url;
+    const method = s.auth_method || "api_key";
+    if (method === "none") {
+      $("authmethod").textContent = "none (not recommended)";
+      $("authheader").textContent = "none";
+    } else if (method === "cloudflare_jwt") {
+      $("authmethod").textContent = "Cloudflare Access JWT";
+      $("authheader").textContent = "Cf-Access-Jwt-Assertion (added by Cloudflare Access)";
+    } else {
+      $("authmethod").textContent = "API key";
+      $("authheader").textContent = "Authorization: Bearer <token> (auth_token: read; send_token: read and send)";
+    }
+    $("authwarn").classList.toggle("hidden", method !== "none");
     $("send").textContent = s.send_enabled
-      ? (s.allowed_recipients > 0 ? "enabled (send token only), " + s.allowed_recipients + " allowed recipient(s)" : "enabled, but allowed_recipients is empty: every send is refused")
+      ? (s.allowed_recipients > 0
+        ? "enabled" + (method === "api_key" ? " (send token only)" : "") + ", " + s.allowed_recipients + " allowed recipient(s)"
+        : "enabled, but allowed_recipients is empty: every send is refused")
       : "disabled";
     $("download").textContent = s.media_download ? "enabled" : "disabled";
     $("counts").textContent = s.chats + " chats, " + s.messages + " messages";

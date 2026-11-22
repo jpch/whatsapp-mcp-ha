@@ -1,7 +1,7 @@
 name: WhatsApp MCP
-version: "0.2.0"
+version: "0.3.0"
 slug: whatsapp_mcp
-description: Your personal WhatsApp account, linked as a device like WhatsApp Web, as an MCP server over streamable HTTP with bearer tokens (read-only by default).
+description: Your personal WhatsApp account, linked as a device like WhatsApp Web, as an MCP server over streamable HTTP. Authenticate with an API key (default), a Cloudflare Access JWT, or none (not recommended).
 url: https://github.com/jpch/whatsapp-mcp-ha
 arch:
   - aarch64
@@ -22,12 +22,13 @@ watchdog: http://[HOST]:[PORT:8120]/healthz
 ports:
   8120/tcp: null
 ports_description:
-  8120/tcp: MCP endpoint (/mcp, bearer token required)
+  8120/tcp: MCP endpoint (/mcp; authentication depends on auth_method)
 # /share/whatsapp-mcp/outbox: the only folder send_file can read. /share/whatsapp-mcp/downloads: download_media.
 map:
   - type: share
     read_only: false
 options:
+  auth_method: api_key
   enable_send: false
   send_rate_per_minute: 6
   send_daily_limit: 50
@@ -37,6 +38,9 @@ options:
   retention_days: 0
   log_level: info
 schema:
+  auth_method: list(none|api_key|cloudflare_jwt)
+  cf_team_domain: str?
+  cf_access_aud: str?
   auth_token: password?
   send_token: password?
   enable_send: bool

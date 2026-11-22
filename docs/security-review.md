@@ -1,5 +1,18 @@
 # Security reviews
 
+## 0.3.0 (proposed)
+
+Notes for review of the `auth_method` change. Not a completed independent review.
+
+`api_key` is unchanged: constant-time bearer comparison, separate read and send tokens, failed attempts throttled.
+`cloudflare_jwt` replaces that check with RS256 verification of the Access JWT (`alg` other than RS256, including
+`none`, is rejected before the signature is considered). The certificate URL is derived only from a single DNS
+label plus `.cloudflareaccess.com`; redirects are not followed. The token, email and other identity claims are not
+logged. A failed JWT counts toward the same per-caller failure limit. With `enable_send` on there is no second
+credential: every identity the Access policy allows can send, which the log warns about. `none` skips
+authentication entirely and logs a warning; it is off unless the configuration says so. `/healthz` stays
+unauthenticated in every mode. `http.CrossOriginProtection` still wraps `/mcp`.
+
 ## 0.2.0
 
 Scope: the 0.2.0 hardening pull request (#2). Local proofs only (unit tests with `-race`, a local binary with

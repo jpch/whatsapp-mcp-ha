@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,8 +44,14 @@ var errSendNotAllowed = errors.New("send tools are disabled or this token is not
 // checkSender is a second check behind the per-token tool list: the call must carry the send token
 // and sending must be active.
 func (t *Tools) checkSender(req *mcp.CallToolRequest) error {
-	if !t.cfg.SendActive() || t.auth == nil || req == nil || req.Extra == nil || req.Extra.Header == nil ||
-		t.auth.Role(req.Extra.Header.Get("Authorization")) != RoleSend {
+	if !t.cfg.SendActive() || t.auth == nil {
+		return errSendNotAllowed
+	}
+	var h http.Header
+	if req != nil && req.Extra != nil {
+		h = req.Extra.Header
+	}
+	if t.auth.RoleFrom(h) != RoleSend {
 		return errSendNotAllowed
 	}
 	return nil

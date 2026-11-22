@@ -15,6 +15,13 @@ import (
 	"strings"
 )
 
+// Authentication methods. api_key is the default and the only one that uses bearer tokens.
+const (
+	AuthMethodAPIKey        = "api_key"        // auth_token (read) and send_token (send)
+	AuthMethodNone          = "none"           // no authentication; not recommended
+	AuthMethodCloudflareJWT = "cloudflare_jwt" // Cloudflare Access JWT; bearer tokens are ignored
+)
+
 // MinTokenLength is the minimum length of a user-provided bearer token.
 const MinTokenLength = 32
 
@@ -73,6 +80,13 @@ type Config struct {
 	// (the Home Assistant ingress proxy).
 	PageAllowedIPs []net.IP
 	AddonMode      bool
+
+	// AuthMethod is none, api_key (default) or cloudflare_jwt.
+	AuthMethod string
+	// CFTeamDomain is the normalised Cloudflare Access team hostname (only for cloudflare_jwt).
+	CFTeamDomain string
+	// CFAccessAUD is the Access application audience tag (only for cloudflare_jwt).
+	CFAccessAUD string
 }
 
 type addonOptions struct {
@@ -86,6 +100,9 @@ type addonOptions struct {
 	LogLevel           *string  `json:"log_level"`
 	AllowedRecipients  []string `json:"allowed_recipients"`
 	RetentionDays      *int     `json:"retention_days"`
+	AuthMethod         *string  `json:"auth_method"`
+	CFTeamDomain       *string  `json:"cf_team_domain"`
+	CFAccessAUD        *string  `json:"cf_access_aud"`
 }
 
 // LoadConfig reads options.json if present, otherwise the environment.
@@ -141,6 +158,15 @@ func LoadConfig(optionsPath string, getenv func(string) string) (*Config, error)
 	if opts.RetentionDays != nil {
 		cfg.RetentionDays = *opts.RetentionDays
 	}
+	if opts.AuthMethod != nil {
+		cfg.AuthMethod = strings.TrimSpace(*opts.AuthMethod)
+	}
+	if opts.CFTeamDomain != nil {
+		cfg.CFTeamDomain = strings.TrimSpace(*opts.CFTeamDomain)
+	}
+	if opts.CFAccessAUD != nil {
+		cfg.CFAccessAUD = strings.TrimSpace(*opts.CFAccessAUD)
+	}
 	for i, r := range opts.AllowedRecipients {
 		if strings.TrimSpace(r) == "" {
 			continue
@@ -194,6 +220,13 @@ func LoadConfig(optionsPath string, getenv func(string) string) (*Config, error)
 
 // finishSend fixes whether sending is active. Called once the tokens are final.
 func (c *Config) finishSend() {
+	if c.AuthMethod == AuthMethodNone || c.AuthMethod == AuthMethodCloudflareJWT {
+		// No bearer token distinguishes readers from senders. enable_send is the switch, and
+		// allowed_recipients still refuses every send when it is empty.
+		c.sendActive = c.EnableSend
+		c.InactiveSendToken = ""
+		return
+	}
 	c.sendActive = c.EnableSend && c.SendToken != ""
 	c.InactiveSendToken = ""
 	if !c.EnableSend && c.SendToken != "" {
@@ -258,6 +291,15 @@ func optionsFromEnv(o *addonOptions, getenv func(string) string) error {
 		}
 		o.RetentionDays = &n
 	}
+	if v := getenv("WA_MCP_AUTH_METHOD"); v != "" {
+		o.AuthMethod = &v
+	}
+	if v := getenv("WA_MCP_CF_TEAM_DOMAIN"); v != "" {
+		o.CFTeamDomain = &v
+	}
+	if v := getenv("WA_MCP_CF_ACCESS_AUD"); v != "" {
+		o.CFAccessAUD = &v
+	}
 	return nil
 }
 
@@ -294,21 +336,26 @@ func validateToken(name, tok string) error {
 }
 
 func (c *Config) validate() error {
-	if c.AuthToken != "" {
-		if err := validateToken("auth_token", c.AuthToken); err != nil {
-			if len(c.AuthToken) < MinTokenLength {
-				return fmt.Errorf("%w (leave it empty to generate one)", err)
-			}
-			return err
-		}
-	}
-	if c.SendToken != "" {
-		if err := validateToken("send_token", c.SendToken); err != nil {
-			return err
-		}
-	}
-	if err := c.checkDistinctTokens(); err != nil {
+	if err := c.normalizeAuth(); err != nil {
 		return err
+	}
+	if c.usesAPIKey() {
+		if c.AuthToken != "" {
+			if err := validateToken("auth_token", c.AuthToken); err != nil {
+				if len(c.AuthToken) < MinTokenLength {
+					return fmt.Errorf("%w (leave it empty to generate one)", err)
+				}
+				return err
+			}
+		}
+		if c.SendToken != "" {
+			if err := validateToken("send_token", c.SendToken); err != nil {
+				return err
+			}
+		}
+		if err := c.checkDistinctTokens(); err != nil {
+			return err
+		}
 	}
 	if c.SendPerMinute < 1 || c.SendPerMinute > 60 {
 		return errors.New("send_rate_per_minute must be between 1 and 60")
@@ -325,6 +372,43 @@ func (c *Config) validate() error {
 	if c.Listen == "" {
 		return errors.New("the MCP listen address cannot be empty")
 	}
+	return nil
+}
+
+// usesAPIKey reports whether bearer tokens are the authentication method.
+// An empty method is api_key, so callers that build a Config without LoadConfig keep the old behaviour.
+func (c *Config) usesAPIKey() bool {
+	return c.AuthMethod == "" || c.AuthMethod == AuthMethodAPIKey
+}
+
+// normalizeAuth canonicalises auth_method and checks the Cloudflare Access settings when they apply.
+func (c *Config) normalizeAuth() error {
+	switch strings.ToLower(strings.TrimSpace(c.AuthMethod)) {
+	case "", "api_key", "api-key", "apikey":
+		c.AuthMethod = AuthMethodAPIKey
+	case "none":
+		c.AuthMethod = AuthMethodNone
+	case "cloudflare_jwt", "cloudflare-jwt", "cf_jwt":
+		c.AuthMethod = AuthMethodCloudflareJWT
+	default:
+		return fmt.Errorf("auth_method: unknown value %q (use none, api_key or cloudflare_jwt)", c.AuthMethod)
+	}
+	if c.AuthMethod != AuthMethodCloudflareJWT {
+		return nil
+	}
+	domain, err := normalizeCFTeamDomain(c.CFTeamDomain)
+	if err != nil {
+		return err
+	}
+	c.CFTeamDomain = domain
+	aud := strings.TrimSpace(c.CFAccessAUD)
+	if aud == "" {
+		return errors.New("cf_access_aud is required when auth_method is cloudflare_jwt (the application AUD tag)")
+	}
+	if len(aud) > 256 || strings.ContainsAny(aud, " \t\r\n") {
+		return errors.New("cf_access_aud must be a single value without spaces")
+	}
+	c.CFAccessAUD = aud
 	return nil
 }
 
@@ -360,6 +444,9 @@ const (
 // EnsureToken loads or creates the generated read-only token when none is configured.
 // The token is never logged.
 func (c *Config) EnsureToken() error {
+	if !c.usesAPIKey() {
+		return nil
+	}
 	if c.AuthToken != "" {
 		return c.checkDistinctTokens()
 	}
@@ -379,7 +466,7 @@ func (c *Config) EnsureSendToken() error {
 		return err
 	}
 	c.finishSend()
-	if !c.EnableSend && c.SendToken == "" {
+	if c.usesAPIKey() && !c.EnableSend && c.SendToken == "" {
 		// A send token generated while sending was on: not accepted now, but not a failed login either.
 		if raw, err := os.ReadFile(filepath.Join(c.DataDir, sendTokenFile)); err == nil {
 			if tok := strings.TrimSpace(string(raw)); len(tok) >= MinTokenLength && tok != c.AuthToken {
@@ -391,6 +478,9 @@ func (c *Config) EnsureSendToken() error {
 }
 
 func (c *Config) ensureSendToken() error {
+	if !c.usesAPIKey() {
+		return nil
+	}
 	if !c.EnableSend || c.SendToken != "" {
 		return c.checkDistinctTokens()
 	}

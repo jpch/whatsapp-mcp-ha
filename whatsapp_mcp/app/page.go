@@ -66,6 +66,7 @@ func NewPageHandler(cfg *Config, store *Store, wa PageController, auth *Authenti
 			"send_token_shown":     cfg.SendTokenGenerated && cfg.SendActive() && fileExists(sendShownPath),
 			"allowed_recipients":   len(cfg.AllowedRecipients),
 			"media_download":       cfg.AllowMediaDownload,
+			"auth_method":          cfg.AuthMethod,
 			"internal_url":         "http://" + hostname + ":" + port + MCPPath,
 			"version":              Version,
 		})

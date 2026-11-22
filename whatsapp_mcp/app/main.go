@@ -70,11 +70,23 @@ func run(level *slog.LevelVar) error {
 	if err := cfg.EnsureSendToken(); err != nil {
 		return configError{err}
 	}
+	switch cfg.AuthMethod {
+	case AuthMethodNone:
+		log.Warn("auth_method is none: /mcp has no authentication. Anyone who can reach it can use this WhatsApp account. This is not recommended")
+	case AuthMethodCloudflareJWT:
+		log.Info("authentication is a Cloudflare Access JWT", "team", cfg.CFTeamDomain)
+		if cfg.SendActive() {
+			log.Warn("send tools are on for every identity the Cloudflare Access policy allows; keep that policy tight")
+		}
+	}
+	if !cfg.usesAPIKey() && (cfg.AuthToken != "" || cfg.SendToken != "") {
+		log.Info("auth_token and send_token are ignored because auth_method is not api_key")
+	}
 	if cfg.SendTokenGenerated {
 		log.Info("no send_token configured: using a generated send token. Open the add-on page to see it (only the client that may send should get it)")
 	}
 	switch {
-	case !cfg.EnableSend && cfg.SendToken != "":
+	case cfg.usesAPIKey() && !cfg.EnableSend && cfg.SendToken != "":
 		log.Info("send_token is set but enable_send is off: send tools are off and send_token is not accepted")
 	case cfg.SendActive() && len(cfg.AllowedRecipients) == 0:
 		log.Warn("send tools are on but allowed_recipients is empty: every send will be refused")
@@ -102,13 +114,22 @@ func run(level *slog.LevelVar) error {
 		return err
 	}
 	auth := NewAuthenticator(cfg.AuthToken, log)
+	switch cfg.AuthMethod {
+	case AuthMethodNone:
+		auth.UseNone(cfg.SendActive())
+	case AuthMethodCloudflareJWT:
+		auth.UseCloudflare(NewCFAccessVerifier(cfg.CFTeamDomain, cfg.CFAccessAUD), cfg.SendActive())
+	default:
+		if cfg.SendActive() {
+			auth.SetSendToken(cfg.SendToken)
+		}
+		auth.SetInactiveSendToken(cfg.InactiveSendToken)
+	}
 	var sendServer *mcp.Server
 	tools := &Tools{cfg: cfg, store: store, wa: mgr, auth: auth, sends: NewSendLimiter(cfg.SendPerMinute, cfg.SendPerDay)}
 	if cfg.SendActive() {
-		auth.SetSendToken(cfg.SendToken)
 		sendServer = NewMCPServer(tools, true)
 	}
-	auth.SetInactiveSendToken(cfg.InactiveSendToken)
 	servers := []*http.Server{newHTTPServer(cfg.Listen, NewMCPHandler(NewMCPServer(tools, false), sendServer, auth))}
 	if cfg.PageListen != "" {
 		servers = append(servers, newHTTPServer(cfg.PageListen, NewPageHandler(cfg, store, mgr, auth)))
@@ -122,7 +143,7 @@ func run(level *slog.LevelVar) error {
 		}(s)
 	}
 	log.Info("WhatsApp MCP started", "version", Version, "mcp", cfg.Listen+MCPPath,
-		"send_tools", cfg.SendActive(), "media_download", cfg.AllowMediaDownload,
+		"auth_method", cfg.AuthMethod, "send_tools", cfg.SendActive(), "media_download", cfg.AllowMediaDownload,
 		"allowed_recipients", len(cfg.AllowedRecipients), "retention_days", cfg.RetentionDays)
 
 	go store.RunRetention(ctx, cfg.RetentionDays, 6*time.Hour, log)

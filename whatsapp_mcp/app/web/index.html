@@ -38,12 +38,14 @@
     <h2>MCP endpoint</h2>
     <dl>
       <dt>Internal URL</dt><dd><code id="url"></code></dd>
-      <dt>Header</dt><dd><code>Authorization: Bearer &lt;token&gt;</code> (auth_token: read tools; send_token: read and send tools)</dd>
+      <dt>Authentication</dt><dd id="authmethod">API key</dd>
+      <dt>Header</dt><dd><code id="authheader">Authorization: Bearer &lt;token&gt; (auth_token: read; send_token: read and send)</code></dd>
       <dt>Send tools</dt><dd id="send"></dd>
       <dt>Media download</dt><dd id="download"></dd>
       <dt>Stored</dt><dd id="counts"></dd>
       <dt>Version</dt><dd id="version"></dd>
     </dl>
+    <p id="authwarn" class="hidden warn">Authentication is off. Anyone who can open port 8120 can use this WhatsApp account. This is not recommended.</p>
     <div id="tokenbox" class="hidden">
       <p>No <code>auth_token</code> is set, so the add-on generated one. It is shown <b>only once</b>, because pages of
         other add-ons opened in Home Assistant share this page's origin. Copy it into your MCP client right away, or set

@@ -186,3 +186,44 @@ func TestOldOptionsKeepReadTokenAndDisableSendUntilConfigured(t *testing.T) {
 		t.Fatalf("%+v", cfg)
 	}
 }
+
+func TestAuthMethodSelection(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	cfg, err := LoadConfig(missing, envMap(nil))
+	if err != nil || cfg.AuthMethod != AuthMethodAPIKey {
+		t.Fatalf("default method: %v %+v", err, cfg)
+	}
+	cfg, err = LoadConfig(missing, envMap(map[string]string{"WA_MCP_AUTH_METHOD": "none", "WA_MCP_TOKEN": "short"}))
+	if err != nil || cfg.AuthMethod != AuthMethodNone {
+		t.Fatalf("none should ignore a short token: %v %+v", err, cfg)
+	}
+	dir := t.TempDir()
+	c := &Config{DataDir: dir, AuthMethod: AuthMethodNone, EnableSend: true}
+	if err := c.EnsureToken(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.EnsureSendToken(); err != nil || !c.SendActive() {
+		t.Fatalf("none + enable_send: %v %+v", err, c)
+	}
+	if _, err := os.Stat(filepath.Join(dir, authTokenFile)); err == nil {
+		t.Fatal("none mode wrote an auth token")
+	}
+	if _, err := LoadConfig(missing, envMap(map[string]string{"WA_MCP_AUTH_METHOD": "cloudflare_jwt"})); err == nil {
+		t.Fatal("cloudflare_jwt without a team was accepted")
+	}
+	if _, err := LoadConfig(missing, envMap(map[string]string{
+		"WA_MCP_AUTH_METHOD": "cloudflare_jwt", "WA_MCP_CF_TEAM_DOMAIN": "https://evil.example/certs", "WA_MCP_CF_ACCESS_AUD": "abc",
+	})); err == nil {
+		t.Fatal("arbitrary cert host accepted")
+	}
+	cfg, err = LoadConfig(missing, envMap(map[string]string{
+		"WA_MCP_AUTH_METHOD": "cloudflare-jwt", "WA_MCP_CF_TEAM_DOMAIN": "MyTeam", "WA_MCP_CF_ACCESS_AUD": "aud-tag",
+		"WA_MCP_ENABLE_SEND": "true", "WA_MCP_TOKEN": "short",
+	}))
+	if err != nil || cfg.AuthMethod != AuthMethodCloudflareJWT || cfg.CFTeamDomain != "myteam.cloudflareaccess.com" || cfg.CFAccessAUD != "aud-tag" || !cfg.SendActive() {
+		t.Fatalf("cloudflare jwt config: %v %+v", err, cfg)
+	}
+	if _, err := LoadConfig(missing, envMap(map[string]string{"WA_MCP_AUTH_METHOD": "basic"})); err == nil {
+		t.Fatal("unknown auth_method accepted")
+	}
+}

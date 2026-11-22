@@ -34,10 +34,13 @@ const (
 // Authenticator checks bearer tokens in constant time and slows down repeated failures.
 // It knows the read-only token and, when sending is active, the send token.
 type Authenticator struct {
-	want     atomic.Pointer[[32]byte]
-	wantSend atomic.Pointer[[32]byte] // nil when sending is not active
-	inactive atomic.Pointer[[32]byte] // send token while enable_send is off; nil if none
-	log      *slog.Logger
+	want       atomic.Pointer[[32]byte]
+	wantSend   atomic.Pointer[[32]byte] // nil when sending is not active
+	inactive   atomic.Pointer[[32]byte] // send token while enable_send is off; nil if none
+	log        *slog.Logger
+	mode       int // 0 api_key, 1 none, 2 cloudflare jwt. Zero keeps bearer-token behaviour.
+	cf         *CFAccessVerifier
+	sendOnAuth bool // none / cloudflare: a successful check may call the send tools
 
 	mu         sync.Mutex
 	failures   map[string]*failEntry
@@ -56,6 +59,27 @@ func NewAuthenticator(token string, log *slog.Logger) *Authenticator {
 		logLimit: rate.NewLimiter(rate.Every(10*time.Second), 5)}
 	a.SetToken(token)
 	return a
+}
+
+const (
+	authModeAPIKey = iota
+	authModeNone
+	authModeCloudflare
+)
+
+// UseNone turns authentication off. sendTools is true when enable_send is on, so every caller
+// gets the send tools. Not recommended.
+func (a *Authenticator) UseNone(sendTools bool) {
+	a.mode = authModeNone
+	a.sendOnAuth = sendTools
+}
+
+// UseCloudflare accepts a Cloudflare Access JWT instead of bearer tokens.
+// sendTools is true when enable_send is on: every identity the Access policy allows can send.
+func (a *Authenticator) UseCloudflare(v *CFAccessVerifier, sendTools bool) {
+	a.mode = authModeCloudflare
+	a.cf = v
+	a.sendOnAuth = sendTools
 }
 
 // SetToken replaces the accepted read-only token (token rotation from the add-on page).
@@ -116,6 +140,31 @@ func (a *Authenticator) Role(header string) Role {
 		return RoleSendInactive
 	}
 	return RoleNone
+}
+
+// RoleFrom is Role for an HTTP request. api_key reads Authorization. none accepts everyone.
+// cloudflare_jwt reads Cf-Access-Jwt-Assertion, then the CF_Authorization cookie.
+func (a *Authenticator) RoleFrom(h http.Header) Role {
+	switch a.mode {
+	case authModeNone:
+		if a.sendOnAuth {
+			return RoleSend
+		}
+		return RoleRead
+	case authModeCloudflare:
+		if a.cf == nil || a.cf.Verify(accessJWT(h)) != nil {
+			return RoleNone
+		}
+		if a.sendOnAuth {
+			return RoleSend
+		}
+		return RoleRead
+	default:
+		if h == nil {
+			return a.Role("")
+		}
+		return a.Role(h.Get("Authorization"))
+	}
 }
 
 // Check returns true if the Authorization header carries a valid token.
@@ -184,7 +233,12 @@ func (a *Authenticator) logFailure() {
 	a.mu.Unlock()
 	if allow {
 		// No client address: behind a tunnel it is the visitor's IP, which is personal data.
-		a.log.Warn("rejected MCP request without a valid token", "suppressed_since_last", suppressed)
+		// The JWT and bearer token are not logged either.
+		msg := "rejected MCP request without a valid token"
+		if a.mode == authModeCloudflare {
+			msg = "rejected MCP request without a valid Cloudflare Access JWT"
+		}
+		a.log.Warn(msg, "suppressed_since_last", suppressed)
 	}
 }
 
@@ -197,7 +251,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			http.Error(w, "too many failed authentication attempts", http.StatusTooManyRequests)
 			return
 		}
-		role := a.Role(r.Header.Get("Authorization"))
+		role := a.RoleFrom(r.Header)
 		if role == RoleSendInactive {
 			http.Error(w, "the send token is not accepted while enable_send is off", http.StatusForbidden)
 			return
@@ -218,7 +272,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 // gets readServer. sendServer may be nil when sending is not active. Every other path returns 404.
 func NewMCPHandler(readServer, sendServer *mcp.Server, auth *Authenticator) http.Handler {
 	pick := func(r *http.Request) *mcp.Server {
-		if sendServer != nil && auth.Role(r.Header.Get("Authorization")) == RoleSend {
+		if sendServer != nil && auth.RoleFrom(r.Header) == RoleSend {
 			return sendServer
 		}
 		return readServer

@@ -146,6 +146,51 @@ func TestRoutesAndAuth(t *testing.T) {
 	}
 }
 
+func TestAuthMethodNoneAndCloudflareJWT(t *testing.T) {
+	read := NewMCPServer(&Tools{cfg: testConfig(t), store: testStore(t), wa: &fakeWA{}, sends: NewSendLimiter(6, 50)}, false)
+	none := NewAuthenticator("ignored", quietLog())
+	none.UseNone(false)
+	noneSrv := httptest.NewServer(NewMCPHandler(read, nil, none))
+	t.Cleanup(noneSrv.Close)
+	resp, err := http.Post(noneSrv.URL+MCPPath, "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		t.Fatalf("none mode rejected a caller: %d", resp.StatusCode)
+	}
+
+	key := testRSA(t)
+	v, aud := accessVerifier(t, jwksOf(&key.PublicKey, "kid-1"))
+	cf := NewAuthenticator("", quietLog())
+	cf.UseCloudflare(v, false)
+	h := cf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+	tok := signAccessJWT(t, key, "kid-1", "", goodClaims(aud))
+	req := httptest.NewRequest("POST", "/mcp", nil)
+	req.RemoteAddr = "10.0.0.8:9"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 401 {
+		t.Fatalf("missing jwt: %d", w.Code)
+	}
+	req = httptest.NewRequest("POST", "/mcp", nil)
+	req.RemoteAddr = "10.0.0.8:9"
+	req.Header.Set("Cf-Access-Jwt-Assertion", tok)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 204 {
+		t.Fatalf("valid jwt: %d", w.Code)
+	}
+	if cf.RoleFrom(req.Header) != RoleRead {
+		t.Fatal("jwt without send should be read-only")
+	}
+	cf.UseCloudflare(v, true)
+	if cf.RoleFrom(req.Header) != RoleSend {
+		t.Fatal("jwt with send tools on should be allowed to send")
+	}
+}
+
 func TestFailedAuthIsRateLimited(t *testing.T) {
 	a := NewAuthenticator("secret-secret-secret-secret-secret", quietLog())
 	now := time.Unix(0, 0)
